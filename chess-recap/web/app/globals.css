@@ -1,0 +1,16 @@
+:root { --ink:#1c2430; --paper:#eef1f3; --dark:#5f7f52; --light:#dfe6d3; --err:#a4342b; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 system-ui, sans-serif; }
+.strip { height:40px; background:repeating-linear-gradient(90deg, var(--dark) 0 40px, var(--light) 40px 80px); }
+main { max-width:460px; margin:0 auto; padding:48px 20px 80px; }
+h1 { font:600 2.2rem/1.15 "Iowan Old Style", Georgia, serif; margin:0 0 12px; }
+p.lead { margin:0 0 32px; color:#4a5565; }
+label { display:block; font-weight:600; margin-bottom:6px; }
+input { width:100%; padding:12px; border:2px solid var(--ink); border-radius:4px; font:inherit; background:#fff; margin-bottom:6px; }
+input:focus-visible, button:focus-visible { outline:3px solid var(--dark); outline-offset:2px; }
+small { display:block; color:#4a5565; margin-bottom:22px; }
+button { width:100%; padding:14px; border:0; border-radius:4px; background:var(--ink); color:#fff; font:600 1rem system-ui; cursor:pointer; }
+button:disabled { opacity:.6; cursor:wait; }
+.msg { margin-top:18px; font-weight:600; }
+.msg.err { color:var(--err); }
+.msg.ok { color:var(--dark); }
