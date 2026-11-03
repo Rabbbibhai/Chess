@@ -11,8 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: sudo apt-get update && sudo apt-get install -y stockfish
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: chess-recap/worker/requirements.txt
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: stockfish
+          version: "1.0"
       - run: pip install -r chess-recap/worker/requirements.txt
       - run: python chess-recap/worker/analyze.py
         env:
