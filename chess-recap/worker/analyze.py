@@ -151,7 +151,7 @@ def table(res):
     return "```\n" + "\n".join(rows) + "\n```"
 
 
-def post(g, res, names, ids):
+def post(g, res, names, ids, mention_ids):
     w, b = g["white"], g["black"]
     fmt = lambda s: ("\n".join(f"{x['text']} (better: {x['better']})" if x["better"] else x["text"]
                                for x in s["blunders"][:6])
@@ -180,14 +180,16 @@ def post(g, res, names, ids):
             x = s["best"]
             embeds.append({"title": f"{uname}: {x['label'].lower()} move {x['text']}",
                            "color": 0x5BA34A, "image": {"url": board_img(x["fen"], x["uci"], side)}})
-    payload = {"content": " ".join(f"<@{i}>" for i in ids),
-               "allowed_mentions": {"users": list(ids)}, "embeds": embeds[:10]}
+    pings = [i for i in ids if i in mention_ids]  # people who asked to stop pings are skipped
+    payload = {"content": " ".join(f"<@{i}>" for i in pings),
+               "allowed_mentions": {"users": pings}, "embeds": embeds[:10]}
     requests.post(HOOK, json=payload, timeout=20).raise_for_status()
 
 
 def main():
     users = requests.get(f"{SB}/users?select=*", headers=H, timeout=20).json()
     names = {u["discord_id"]: u["chess_username"].lower() for u in users}
+    mention_ids = {u["discord_id"] for u in users if u.get("mention", True)}
 
     pending = {}  # game url -> {"g": game, "ids": set of discord ids}
     for u in users:
@@ -204,7 +206,7 @@ def main():
             for url, item in todo:
                 game = chess.pgn.read_game(io.StringIO(item["g"]["pgn"]))
                 res = analyze(game, engine)
-                post(item["g"], res, names, item["ids"])
+                post(item["g"], res, names, item["ids"], mention_ids)
                 for did in item["ids"]:
                     requests.patch(f"{SB}/users?discord_id=eq.{did}", headers=H,
                                    json={"last_end_time": item["g"]["end_time"]}, timeout=20)
@@ -224,4 +226,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
