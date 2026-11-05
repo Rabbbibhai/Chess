@@ -1,4 +1,4 @@
-import io, math, os
+import io, math, os, random
 from datetime import datetime
 from urllib.parse import quote
 import chess, chess.engine, chess.pgn, requests
@@ -17,6 +17,54 @@ VAL = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUE
 MAX_GAMES_PER_RUN = 10
 DEPTH = 12
 BOOK_PLIES = 12  # early moves that are not worse than "Excellent" count as Book
+
+# Friendly trash talk, keyed by lowercase chess.com username
+TAUNTS = {
+    "tungpearlsahur": {"name": "Sabir", "style": "roast"},
+    "nafikhann": {"name": "Nafi", "style": "roast"},
+    "raybuy": {"name": "Jahid", "style": "goat"},
+}
+LOSS_RESULTS = {"checkmated", "timeout", "resigned", "lose", "abandoned"}
+ROAST_LOSS = [
+    "{name}, tmi ki dumb? 💀",
+    "{name} lost again. The engine is crying.",
+    "{name}, even a random move generator would have done better.",
+    "{name} hung everything and called it a strategy. 🤡",
+    "Bro {name}, chess is not a contact sport against your own pieces.",
+    "{name}, have you thought about checkers?",
+    "{name} speedran losing. New personal best.",
+    "{name}, your brain went on vacation mid-game.",
+    "That was painful to watch, {name}. Truly.",
+    "{name} played like he was blindfolded. With oven mitts. 🧤",
+    "{name} didn't get beaten, he gift-wrapped the game. 🎁",
+    "{name}, skill issue. A big one.",
+    "RIP {name}'s rating 📉",
+]
+ROAST_WIN = [
+    "{name} won?? Pure luck, the opponent must have blinked. 🍀",
+    "{name} won by mistake. Don't get used to it.",
+    "Lucky win, {name}. The opponent clearly threw it.",
+    "Even a broken clock is right twice a day, {name}. Enjoy the fluke.",
+    "{name} got lucky. Again. The chess gods took pity. 🙏",
+    "The opponent lost, {name} just happened to be sitting there.",
+    "Accident of the day: {name} won a chess game. 🎰",
+    "{name} won, but we all saw that was luck.",
+]
+GOAT_LOSS = [
+    "{name} is still the GOAT 🐐. {opp} was obviously cheating.",
+    "{name} didn't lose, {opp} had an engine open. Case closed.",
+    "No way {opp} played that clean. Sus. {name} is still the GOAT. 🐐",
+    "{opp} was cheating, everyone knows it. {name} is the real winner.",
+    "Rigged! {name} is the GOAT and {opp} is clearly using Stockfish. 🕵️",
+    "{name} lost to a cheater. It doesn't count. 🐐",
+]
+GOAT_WIN = [
+    "{name} wins. GG.",
+    "Solid win for {name}.",
+    "{name} takes the W. Next game.",
+    "Another one for {name}.",
+    "{name} wins. Clean game.",
+]
 
 
 def wp(cp):  # centipawns -> win % (0-100)
@@ -151,6 +199,24 @@ def table(res):
     return "```\n" + "\n".join(rows) + "\n```"
 
 
+def taunt_for(g):
+    lines = []
+    for side, other in (("white", "black"), ("black", "white")):
+        p = g[side]
+        cfg = TAUNTS.get(p["username"].lower())
+        if not cfg:
+            continue
+        won, lost = p["result"] == "win", p["result"] in LOSS_RESULTS
+        if not (won or lost):
+            continue  # draws get no comment
+        if cfg["style"] == "goat":
+            pool = GOAT_WIN if won else GOAT_LOSS
+        else:
+            pool = ROAST_WIN if won else ROAST_LOSS
+        lines.append(random.choice(pool).format(name=cfg["name"], opp=g[other]["username"]))
+    return "\n".join(lines)
+
+
 def post(g, res, names, ids, mention_ids):
     w, b = g["white"], g["black"]
     fmt = lambda s: ("\n".join(f"{x['text']} (better: {x['better']})" if x["better"] else x["text"]
@@ -181,7 +247,8 @@ def post(g, res, names, ids, mention_ids):
             embeds.append({"title": f"{uname}: {x['label'].lower()} move {x['text']}",
                            "color": 0x5BA34A, "image": {"url": board_img(x["fen"], x["uci"], side)}})
     pings = [i for i in ids if i in mention_ids]  # people who asked to stop pings are skipped
-    payload = {"content": " ".join(f"<@{i}>" for i in pings),
+    content = (" ".join(f"<@{i}>" for i in pings) + "\n" + taunt_for(g)).strip()
+    payload = {"content": content,
                "allowed_mentions": {"users": pings}, "embeds": embeds[:10]}
     requests.post(HOOK, json=payload, timeout=20).raise_for_status()
 
