@@ -125,12 +125,8 @@ def analyze(game, engine):
         blunders = [x for x in s["moves"] if x["label"] == "Blunder"]
         s["blunders"] = blunders
         s["worst"] = max(blunders, key=lambda x: x["loss"]) if blunders else None
-        s["best"] = None
-        for lab in ("Brilliant", "Great", "Excellent"):
-            found = [x for x in s["moves"] if x["label"] == lab]
-            if found:
-                s["best"] = found[0]
-                break
+        brilliants = [x for x in s["moves"] if x["label"] == "Brilliant"]
+        s["best"] = brilliants[0] if brilliants else None  # only brilliant moves get a picture
     return sides
 
 
@@ -193,7 +189,7 @@ def post(g, res, names, ids, mention_ids):
             {"name": f"{b['username']} blunders", "value": fmt(res["black"])[:1000]},
         ],
     }]
-    # pictures for the registered players' own worst blunder and best move
+    # pictures for the registered players' own worst blunder and any brilliant move
     for did in ids:
         uname = names.get(did, "")
         side = "white" if w["username"].lower() == uname else "black"
@@ -205,8 +201,8 @@ def post(g, res, names, ids, mention_ids):
                            "color": 0xE5484D, "image": {"url": board_img(x["fen"], x["uci"], side)}})
         if s["best"]:
             x = s["best"]
-            embeds.append({"title": f"{uname}: {x['label'].lower()} move {x['text']}",
-                           "color": 0x5BA34A, "image": {"url": board_img(x["fen"], x["uci"], side)}})
+            embeds.append({"title": f"{uname}: brilliant move {x['text']}",
+                           "color": 0x1BACA6, "image": {"url": board_img(x["fen"], x["uci"], side)}})
     pings = [i for i in ids if i in mention_ids]  # people who asked to stop pings are skipped
     content = (" ".join(f"<@{i}>" for i in pings) + "\n" + taunt_for(g)).strip()
     payload = {"content": content,
