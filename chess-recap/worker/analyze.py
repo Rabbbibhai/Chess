@@ -2,6 +2,7 @@ import io, math, os, random
 from datetime import datetime
 from urllib.parse import quote
 import chess, chess.engine, chess.pgn, requests
+from taunts import ROAST_LOSS, ROAST_WIN, GOAT_LOSS, GOAT_WIN
 
 KEY = os.environ["SUPABASE_SERVICE_KEY"]
 SB = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1"
@@ -18,53 +19,13 @@ MAX_GAMES_PER_RUN = 10
 DEPTH = 12
 BOOK_PLIES = 12  # early moves that are not worse than "Excellent" count as Book
 
-# Friendly trash talk, keyed by lowercase chess.com username
+# Friendly trash talk, keyed by lowercase chess.com username (the lines live in taunts.py)
 TAUNTS = {
     "tungpearlsahur": {"name": "Sabir", "style": "roast"},
     "nafikhann": {"name": "Nafi", "style": "roast"},
     "raybuy": {"name": "Jahid", "style": "goat"},
 }
 LOSS_RESULTS = {"checkmated", "timeout", "resigned", "lose", "abandoned"}
-ROAST_LOSS = [
-    "{name}, tmi ki dumb? 💀",
-    "{name} lost again. The engine is crying.",
-    "{name}, even a random move generator would have done better.",
-    "{name} hung everything and called it a strategy. 🤡",
-    "Bro {name}, chess is not a contact sport against your own pieces.",
-    "{name}, have you thought about checkers?",
-    "{name} speedran losing. New personal best.",
-    "{name}, your brain went on vacation mid-game.",
-    "That was painful to watch, {name}. Truly.",
-    "{name} played like he was blindfolded. With oven mitts. 🧤",
-    "{name} didn't get beaten, he gift-wrapped the game. 🎁",
-    "{name}, skill issue. A big one.",
-    "RIP {name}'s rating 📉",
-]
-ROAST_WIN = [
-    "{name} won?? Pure luck, the opponent must have blinked. 🍀",
-    "{name} won by mistake. Don't get used to it.",
-    "Lucky win, {name}. The opponent clearly threw it.",
-    "Even a broken clock is right twice a day, {name}. Enjoy the fluke.",
-    "{name} got lucky. Again. The chess gods took pity. 🙏",
-    "The opponent lost, {name} just happened to be sitting there.",
-    "Accident of the day: {name} won a chess game. 🎰",
-    "{name} won, but we all saw that was luck.",
-]
-GOAT_LOSS = [
-    "{name} is still the GOAT 🐐. {opp} was obviously cheating.",
-    "{name} didn't lose, {opp} had an engine open. Case closed.",
-    "No way {opp} played that clean. Sus. {name} is still the GOAT. 🐐",
-    "{opp} was cheating, everyone knows it. {name} is the real winner.",
-    "Rigged! {name} is the GOAT and {opp} is clearly using Stockfish. 🕵️",
-    "{name} lost to a cheater. It doesn't count. 🐐",
-]
-GOAT_WIN = [
-    "{name} wins. GG.",
-    "Solid win for {name}.",
-    "{name} takes the W. Next game.",
-    "Another one for {name}.",
-    "{name} wins. Clean game.",
-]
 
 
 def wp(cp):  # centipawns -> win % (0-100)
