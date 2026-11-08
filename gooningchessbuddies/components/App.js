@@ -11,8 +11,9 @@ const G = { K: '♚', Q: '♛', R: '♜', B: '♝', N: '♞', P: '♟' }, T = '\
 const LBL = { 2: '1v1', 3: '3 players', 4: '4 players' };
 const mine = () => JSON.parse(localStorage.getItem('me') || 'null');
 
+// x-region runs the server function right next to the database, which makes every call much faster.
 async function api(action, body = {}) {
-  const r = await fetch(U + '/functions/v1/api', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: K }, body: JSON.stringify({ action, token: mine()?.token, ...body }) });
+  const r = await fetch(U + '/functions/v1/api', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: K, 'x-region': 'us-east-1' }, body: JSON.stringify({ action, token: mine()?.token, ...body }) });
   const j = await r.json();
   if (j.error) {
     if (j.error.startsWith('Please sign in')) { localStorage.removeItem('me'); location.reload(); }
@@ -149,7 +150,7 @@ function Game({ id, me, go }) {
     sb.from('game_state').select('state').eq('game_id', id).maybeSingle().then(({ data }) => on && data && setSt(data.state));
     const ch = sb.channel('g' + id)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'games', filter: `id=eq.${id}` }, (p) => setG(p.eventType === 'DELETE' ? false : p.new))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'game_state', filter: `game_id=eq.${id}` }, (p) => p.new?.state && setSt(p.new.state))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'game_state', filter: `game_id=eq.${id}` }, (p) => p.new?.state && setSt((s) => (s && s.n > p.new.state.n ? s : p.new.state)))
       .subscribe();
     return () => { on = false; sb.removeChannel(ch); };
   }, [id]);
@@ -180,6 +181,22 @@ function Game({ id, me, go }) {
 
   const seat = st.seats.indexOf(me.id), over = g.status === 'finished';
   const myTurn = !over && seat >= 0 && st.turn === seat;
+  // The move shows on your screen instantly; the server confirms in the background (and we undo if it refuses).
+  const doMove = async (from, to) => {
+    const prev = st;
+    setErr('');
+    try {
+      let next;
+      if (chess) {
+        const c = new Chess(chess.fen()), mv = c.move({ from, to, promotion: 'q' });
+        next = { ...st, moves: [...st.moves, from + to + (mv.promotion || '')], turn: 1 - st.turn, n: st.n + 1 };
+      } else next = E.apply(st, from[0], from[1], to[0], to[1]);
+      setSt(next);
+      const r = await api('move', { id, from, to });
+      if (r.state) setSt((s) => (s && s.n > r.state.n ? s : r.state));
+      if (r.result) setG((x) => ({ ...x, status: 'finished', result: r.result }));
+    } catch (e) { setSt(prev); setErr(e.message); }
+  };
   let cell, pick;
   if (chess) {
     const bd = chess.board(), flip = seat === 1, lm = st.moves[st.moves.length - 1];
@@ -192,7 +209,7 @@ function Game({ id, me, go }) {
     pick = (r, c) => {
       const [sq, p] = at(r, c);
       if (!myTurn) return;
-      if (sel && tg.includes(sq)) { setSel(null); act('move', { from: sel, to: sq }); }
+      if (sel && tg.includes(sq)) { const f = sel; setSel(null); doMove(f, sq); }
       else setSel(p && p.color === (seat === 0 ? 'w' : 'b') ? sq : null);
     };
   } else {
@@ -208,7 +225,7 @@ function Game({ id, me, go }) {
     pick = (r, c) => {
       const [br, bc] = rot(r, c);
       if (!myTurn) return;
-      if (sel && tg.some((t) => hit(t, br, bc))) { const f = sel; setSel(null); act('move', { from: f, to: [br, bc] }); }
+      if (sel && tg.some((t) => hit(t, br, bc))) { const f = sel; setSel(null); doMove(f, [br, bc]); }
       else { const p = st.board[br * 14 + bc]; setSel(p && +p[0] === seat ? [br, bc] : null); }
     };
   }
