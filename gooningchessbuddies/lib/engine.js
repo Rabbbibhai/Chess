@@ -6,7 +6,7 @@ export function initial(seats){
   const board=Array(196).fill(null),B="RNBQKBNR";
   seats.forEach((id,s)=>{if(!id)return;for(let x=0;x<8;x++)for(let d=0;d<2;d++){
     const [r,c]=[[13-d,3+x],[3+x,d],[d,10-x],[10-x,13-d]][s];board[r*N+c]=s+(d?"P":B[x]);}});
-  return {kind:"multi",seats,alive:seats.map(Boolean),turn:0,board,last:null,n:0,half:0};
+  return {kind:"multi",seats,alive:seats.map(Boolean),turn:0,board,last:null,n:0,half:0,log:[]};
 }
 export function movesFrom(st,r,c){
   const p=st.board[r*N+c];if(!p)return[];const s=+p[0],t=p[1],o=[],at=(a,b)=>st.board[a*N+b];
@@ -25,6 +25,7 @@ export function apply(st,fr,fc,tr,tc){
   const s2=structuredClone(st),b=s2.board,p=b[fr*N+fc],s=+p[0],cap=b[tr*N+tc];
   b[fr*N+fc]=null;b[tr*N+tc]=p[1]=="P"&&dep(s,tr,tc)>=8?s+"Q":p;
   s2.half=cap||p[1]=="P"?0:st.half+1;s2.last=[fr,fc,tr,tc];s2.n++;
+  s2.log=[...(st.log||[]),`${s}${p[1]}${"abcdefghijklmn"[tc]}${14-tr}${cap?"x"+cap[1]:""}`];
   if(cap&&cap[1]=="K")eliminate(s2,+cap[0]);
   advance(s2);return s2;
 }
