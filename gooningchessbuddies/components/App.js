@@ -26,6 +26,7 @@ const tone = (f, d, type = 'sine', v = 0.15, at = 0) => {
 const sfx = {
   move: () => tone(520, 0.07, 'triangle'),
   cap: () => { tone(200, 0.12, 'square', 0.1); tone(330, 0.09, 'triangle', 0.15, 0.02); },
+  boom: () => { tone(90, 0.45, 'sawtooth', 0.22); tone(55, 0.55, 'square', 0.15, 0.04); },
   end: () => { tone(523, 0.15); tone(659, 0.15, 'sine', 0.15, 0.15); tone(784, 0.35, 'sine', 0.15, 0.3); },
 };
 
@@ -70,14 +71,23 @@ const SYM = (
   </svg>
 );
 const STYLE = `.pc{width:90%;height:90%;fill:var(--pf);stroke:var(--sk);stroke-width:1.5;stroke-linejoin:round;filter:drop-shadow(0 1px 1px rgba(0,0,0,.45));pointer-events:none}
-.clk{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:800;background:#1b1a18;padding:2px 6px;border-radius:5px;font-size:.85rem}
-.clk.low{background:#8a2a2a}.clk+i{margin-left:6px}
-.caps{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 6px}
-.cp{display:flex;align-items:center;gap:1px;background:var(--card);padding:2px 8px;border-radius:8px}
-.cp i{width:10px;height:10px;border-radius:50%;margin-right:5px;border:1px solid #666}
+.bar{gap:6px}
+.bar .pl{border:2px solid transparent;border-left:5px solid var(--c);padding:6px 8px;gap:8px;min-width:0}
+.bar .pl.on{border-color:transparent;border-left-color:var(--c);box-shadow:inset 0 0 0 2px var(--green);background:#2f3a25}
+.pi{display:flex;flex-direction:column;min-width:0;line-height:1.2}
+.pi b{font-size:.8rem;color:var(--mut)}
+.clk{font-variant-numeric:tabular-nums;font-weight:800;font-size:1.05rem}
+.clk.low{color:#ff6b6b}
+.board{width:100%;max-width:860px;margin:6px auto 14px;padding:6px;background:#262421;border-radius:12px}
+.turn{display:inline-block;margin:2px 0 8px;padding:6px 14px;border-radius:99px;background:var(--card);color:var(--mut);font-weight:700;font-size:.9rem}
+.turn.me{background:var(--green);color:#10200a}
+.ctl{display:flex;gap:8px}.ctl button{flex:1;padding:12px 6px}
+.danger{background:#c0392b!important;box-shadow:0 3px 0 #7b241c!important}
 .moves{display:flex;flex-wrap:wrap;gap:4px 10px;max-height:104px;overflow:auto;background:var(--card);border-radius:10px;padding:10px 12px;font-size:.9rem;color:var(--mut);margin-bottom:12px}
 .moves b{color:#fff;margin-right:3px}.moves .dt{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
-.tcs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px}.tcs button{padding:7px 12px;font-size:.9rem}`;
+.tcs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px}.tcs button{padding:7px 12px;font-size:.9rem}
+.boom{position:absolute;font-size:2.6em;z-index:3;pointer-events:none;animation:bm .85s ease-out forwards}
+@keyframes bm{0%{transform:scale(.2);opacity:1}55%{transform:scale(1.5);opacity:1}100%{transform:scale(2.3);opacity:0}}`;
 function Pc({ t, color, stroke = '#1b1b1b', size }) {
   return <svg className='pc' viewBox='0 0 45 45' style={{ '--pf': color, '--sk': stroke, ...(size && { width: size, height: size }) }}><use href={'#' + t} /></svg>;
 }
@@ -181,24 +191,18 @@ function Board({ n, cell, pick }) {
       ? <div key={k} className={'sq ' + ((r + c) % 2 ? 'd' : 'l') + (x.sel ? ' sel' : '') + (x.last ? ' last' : '')} onClick={() => pick(r, c)}>
           {x.t && <Pc t={x.t} color={x.color} stroke={x.sk} />}
           {x.tg && <i className='dot' />}
+          {x.boom && <span className='boom'>💥</span>}
         </div>
       : <div key={k} />);
   }
   return <div className='board' style={{ '--n': n }}>{out}</div>;
 }
 
-const INIT = { p: 8, n: 2, b: 2, r: 2, q: 1 };
-function chessCaps(c) {
-  const cnt = { w: {}, b: {} };
-  c.board().flat().forEach((x) => { if (x && x.type !== 'k') cnt[x.color][x.type] = (cnt[x.color][x.type] || 0) + 1; });
-  const miss = (col) => Object.entries(INIT).flatMap(([t, k]) => Array(Math.max(0, k - (cnt[col][t] || 0))).fill(t.toUpperCase()));
-  return [miss('b'), miss('w')];
-}
-
 function Game({ id, me, go }) {
   const [g, setG] = useState(null), [st, setSt] = useState(null), [sel, setSel] = useState(null), [err, setErr] = useState('');
-  const [, tick] = useState(0), [mute, setMute] = useState(localStorage.getItem('mute') === '1');
+  const [, tick] = useState(0), [mute, setMute] = useState(localStorage.getItem('mute') === '1'), [boomMode, setBoomMode] = useState(false);
   const recv = useRef(Date.now()), prevN = useRef(null), flagN = useRef(-1), mv = useRef(null);
+  const boss = me.username.toLowerCase() === 'jahidkhan';
   useEffect(() => {
     let on = true;
     sb.from('games').select('*').eq('id', id).maybeSingle().then(({ data }) => on && setG(data || false));
@@ -212,7 +216,7 @@ function Game({ id, me, go }) {
   const name = useNames(g ? g.players : []);
   const chess = useMemo(() => {
     if (st?.kind !== 'chess') return null;
-    const c = new Chess();
+    const c = st.base ? new Chess(st.base) : new Chess();
     st.moves.forEach((m) => c.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] }));
     return c;
   }, [st]);
@@ -220,8 +224,11 @@ function Game({ id, me, go }) {
   useEffect(() => {
     recv.current = Date.now();
     if (st && prevN.current !== null && st.n > prevN.current) {
-      const last = chess ? chess.history().slice(-1)[0] : (st.log || []).slice(-1)[0];
-      sfx[/x/.test(last || '') ? 'cap' : 'move']();
+      if (st.boom && st.boom.n === st.n) sfx.boom();
+      else {
+        const last = chess ? chess.history().slice(-1)[0] : (st.log || []).slice(-1)[0];
+        sfx[/x/.test(last || '') ? 'cap' : 'move']();
+      }
     }
     prevN.current = st ? st.n : null;
     if (mv.current) mv.current.scrollTop = 1e6;
@@ -260,6 +267,7 @@ function Game({ id, me, go }) {
     const ms = Math.max(0, st.clock[s] - (!over && st.turn === s ? Date.now() - recv.current : 0));
     return { t: Math.floor(ms / 60000) + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0'), low: ms < 10000 };
   };
+  const showBoom = (sq) => st.boom && st.boom.n === st.n && Date.now() - recv.current < 900 && JSON.stringify(st.boom.sq) === JSON.stringify(sq);
   // The move shows on your screen instantly; the server confirms in the background (and we undo if it refuses).
   const doMove = async (from, to) => {
     const prev = st;
@@ -284,10 +292,11 @@ function Game({ id, me, go }) {
     const at = (r, c) => { const [br, bc] = flip ? [7 - r, 7 - c] : [r, c]; return ['abcdefgh'[bc] + (8 - br), bd[br][bc]]; };
     cell = (r, c) => {
       const [sq, p] = at(r, c), w = p?.color === 'w';
-      return { ok: true, t: p && p.type.toUpperCase(), color: w ? '#fff' : '#3a3a3a', sk: w ? '#222' : '#000', sel: sel === sq, tg: tg.includes(sq), last: lm && (lm.slice(0, 2) === sq || lm.slice(2, 4) === sq) };
+      return { ok: true, t: p && p.type.toUpperCase(), color: w ? '#fff' : '#3a3a3a', sk: w ? '#222' : '#000', sel: sel === sq, tg: tg.includes(sq), last: lm && (lm.slice(0, 2) === sq || lm.slice(2, 4) === sq), boom: showBoom(sq) };
     };
     pick = (r, c) => {
       const [sq, p] = at(r, c);
+      if (boomMode) { act('boom', { at: sq }); return; }
       if (!myTurn) return;
       if (sel && tg.includes(sq)) { const f = sel; setSel(null); doMove(f, sq); }
       else setSel(p && p.color === (seat === 0 ? 'w' : 'b') ? sq : null);
@@ -300,47 +309,45 @@ function Game({ id, me, go }) {
       const [br, bc] = rot(r, c);
       if (!E.ok(br, bc)) return { ok: false };
       const p = st.board[br * 14 + bc], l = st.last;
-      return { ok: true, t: p && p[1], color: p && COL[+p[0]], sk: '#1b1b1b', sel: sel && hit(sel, br, bc), tg: tg.some((t) => hit(t, br, bc)), last: l && ((l[0] === br && l[1] === bc) || (l[2] === br && l[3] === bc)) };
+      return { ok: true, t: p && p[1], color: p && COL[+p[0]], sk: '#1b1b1b', sel: sel && hit(sel, br, bc), tg: tg.some((t) => hit(t, br, bc)), last: l && ((l[0] === br && l[1] === bc) || (l[2] === br && l[3] === bc)), boom: showBoom([br, bc]) };
     };
     pick = (r, c) => {
       const [br, bc] = rot(r, c);
+      if (boomMode) { act('boom', { at: [br, bc] }); return; }
       if (!myTurn) return;
       if (sel && tg.some((t) => hit(t, br, bc))) { const f = sel; setSel(null); doMove(f, [br, bc]); }
       else { const p = st.board[br * 14 + bc]; setSel(p && +p[0] === seat ? [br, bc] : null); }
     };
   }
-  const caps = chess ? chessCaps(chess) : st.seats.map((_, s) => (st.log || []).filter((e) => +e[0] === s && e.includes('x')).map((e) => e.split('x')[1]));
+  let k = 0;
+  const items = chess
+    ? [...(st.pre || []), ...chess.history()].map((m, i) => {
+        const b = m.startsWith('💥'), num = !b && k % 2 === 0 ? <b>{k / 2 + 1}.</b> : null;
+        if (!b) k++;
+        return <span key={i}>{num}{m}</span>;
+      })
+    : (st.log || []).map((e, i) => <span key={i}><i className='dt' style={{ background: COL[+e[0]] }} />{e.slice(1).replace('x', ' ×')}</span>);
   const res = g.result;
   return (
     <>
       <style>{STYLE}</style>
       <div className='bar'>
-        {st.seats.map((pid, s) => { const c = clockOf(s); return pid && (
-          <div key={s} className={'pl' + (!over && st.turn === s ? ' on' : '') + (st.alive && !st.alive[s] ? ' out' : '')}>
-            <Av p={name(pid)} s={26} /><b>{name(pid).username}</b>
-            {c && <span className={'clk' + (c.low ? ' low' : '')}>{c.t}</span>}
-            <i style={{ background: chess ? (s ? '#111' : '#fff') : COL[s] }} />
+        {st.seats.map((pid, s) => { const c = clockOf(s), color = chess ? (s ? '#111' : '#fff') : COL[s]; return pid && (
+          <div key={s} style={{ '--c': color }} className={'pl' + (!over && st.turn === s ? ' on' : '') + (st.alive && !st.alive[s] ? ' out' : '')}>
+            <Av p={name(pid)} s={30} />
+            <div className='pi'><b>{name(pid).username}</b>{c && <span className={'clk' + (c.low ? ' low' : '')}>{c.t}</span>}</div>
           </div>
         ); })}
       </div>
       {res && <p className='big'>{res.winner ? `${name(res.winner).username} wins (${res.reason})` : `Draw (${res.reason})`}</p>}
-      {!res && <p className='mut'>{seat < 0 ? 'Spectating' : myTurn ? 'Your turn' : 'Waiting for opponent'}</p>}
+      {!res && <div className={'turn' + (myTurn ? ' me' : '')}>{seat < 0 ? 'Spectating' : myTurn ? 'Your turn' : `${name(st.seats[st.turn]).username}'s turn`}</div>}
+      {boomMode && <p className='err'>Boom mode: tap any piece to blow it up (kings are safe).</p>}
       <Board n={chess ? 8 : 14} cell={cell} pick={pick} />
-      {caps.some((c) => c.length) && (
-        <div className='caps'>
-          {st.seats.map((pid, s) => pid && caps[s].length > 0 && (
-            <span key={s} className='cp'><i style={{ background: chess ? (s ? '#111' : '#fff') : COL[s] }} />{caps[s].map((t, i) => <Pc key={i} t={t} color='#cfcfcf' stroke='#333' size={18} />)}</span>
-          ))}
-        </div>
-      )}
       {err && <p className='err'>{err}</p>}
-      <div className='moves' ref={mv}>
-        {chess
-          ? (chess.history().length ? chess.history().map((m, i) => <span key={i}>{i % 2 === 0 && <b>{i / 2 + 1}.</b>}{m}</span>) : 'No moves yet')
-          : ((st.log || []).length ? st.log.map((e, i) => <span key={i}><i className='dt' style={{ background: COL[+e[0]] }} />{e.slice(1).replace('x', ' ×')}</span>) : 'No moves yet')}
-      </div>
-      <div className='row' style={{ justifyContent: 'center' }}>
+      <div className='moves' ref={mv}>{items.length ? items : 'No moves yet'}</div>
+      <div className='ctl'>
         {seat >= 0 && !over && <button onClick={() => confirm('Resign?') && act('resign')}>Resign</button>}
+        {boss && !over && <button className={boomMode ? 'danger' : ''} onClick={() => { setBoomMode(!boomMode); setSel(null); }}>💥 Boom</button>}
         <button onClick={() => { localStorage.setItem('mute', mute ? '0' : '1'); setMute(!mute); }}>{mute ? 'Sound off' : 'Sound on'}</button>
         <button onClick={() => go(null)}>Lobby</button>
       </div>
