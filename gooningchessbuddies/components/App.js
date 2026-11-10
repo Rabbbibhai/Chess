@@ -78,7 +78,8 @@ const STYLE = `.pc{width:90%;height:90%;fill:var(--pf);stroke:var(--sk);stroke-w
 .pi b{font-size:.8rem;color:var(--mut)}
 .clk{font-variant-numeric:tabular-nums;font-weight:800;font-size:1.05rem}
 .clk.low{color:#ff6b6b}
-.board{width:100%;max-width:860px;margin:6px auto 14px;padding:6px;background:#262421;border-radius:12px}
+.board{width:100%;max-width:860px;margin:6px auto 14px;padding:6px;background:#262421;border-radius:12px;grid-template-rows:repeat(var(--n),1fr)}
+.board>div{min-width:0;min-height:0}
 .turn{display:inline-block;margin:2px 0 8px;padding:6px 14px;border-radius:99px;background:var(--card);color:var(--mut);font-weight:700;font-size:.9rem}
 .turn.me{background:var(--green);color:#10200a}
 .ctl{display:flex;gap:8px}.ctl button{flex:1;padding:12px 6px}
@@ -87,7 +88,9 @@ const STYLE = `.pc{width:90%;height:90%;fill:var(--pf);stroke:var(--sk);stroke-w
 .moves b{color:#fff;margin-right:3px}.moves .dt{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
 .tcs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px}.tcs button{padding:7px 12px;font-size:.9rem}
 .boom{position:absolute;font-size:2.6em;z-index:3;pointer-events:none;animation:bm .85s ease-out forwards}
-@keyframes bm{0%{transform:scale(.2);opacity:1}55%{transform:scale(1.5);opacity:1}100%{transform:scale(2.3);opacity:0}}`;
+@keyframes bm{0%{transform:scale(.2);opacity:1}55%{transform:scale(1.5);opacity:1}100%{transform:scale(2.3);opacity:0}}
+.flash{position:fixed;left:12px;right:12px;top:22%;z-index:50;padding:20px 16px;border-radius:16px;text-align:center;font-weight:900;font-size:1.35rem;line-height:1.25;color:#fff;background:linear-gradient(135deg,#ff2e63,#ff9a3c);box-shadow:0 12px 48px rgba(0,0,0,.65);text-shadow:0 2px 0 rgba(0,0,0,.35);animation:fl 5s ease-out forwards;pointer-events:none}
+@keyframes fl{0%{transform:scale(.6) rotate(-3deg);opacity:0}6%{transform:scale(1.08) rotate(1deg);opacity:1}12%{transform:scale(1) rotate(0)}85%{opacity:1}100%{opacity:0}}`;
 function Pc({ t, color, stroke = '#1b1b1b', size }) {
   return <svg className='pc' viewBox='0 0 45 45' style={{ '--pf': color, '--sk': stroke, ...(size && { width: size, height: size }) }}><use href={'#' + t} /></svg>;
 }
@@ -285,6 +288,13 @@ function Game({ id, me, go }) {
       if (r.result) setG((x) => ({ ...x, status: 'finished', result: r.result }));
     } catch (e) { setSt(prev); setErr(e.message); }
   };
+  const doBoom = async (at) => {
+    try {
+      const r = await api('boom', { id, at });
+      if (r.state) setSt((s) => (s && s.n > r.state.n ? s : r.state));
+      if (r.result) setG((x) => ({ ...x, status: 'finished', result: r.result }));
+    } catch (e) { setErr(e.message); }
+  };
   let cell, pick;
   if (chess) {
     const bd = chess.board(), flip = seat === 1, lm = st.moves[st.moves.length - 1];
@@ -296,7 +306,7 @@ function Game({ id, me, go }) {
     };
     pick = (r, c) => {
       const [sq, p] = at(r, c);
-      if (boomMode) { act('boom', { at: sq }); return; }
+      if (boomMode) { doBoom(sq); return; }
       if (!myTurn) return;
       if (sel && tg.includes(sq)) { const f = sel; setSel(null); doMove(f, sq); }
       else setSel(p && p.color === (seat === 0 ? 'w' : 'b') ? sq : null);
@@ -313,7 +323,7 @@ function Game({ id, me, go }) {
     };
     pick = (r, c) => {
       const [br, bc] = rot(r, c);
-      if (boomMode) { act('boom', { at: [br, bc] }); return; }
+      if (boomMode) { doBoom([br, bc]); return; }
       if (!myTurn) return;
       if (sel && tg.some((t) => hit(t, br, bc))) { const f = sel; setSel(null); doMove(f, [br, bc]); }
       else { const p = st.board[br * 14 + bc]; setSel(p && +p[0] === seat ? [br, bc] : null); }
@@ -331,6 +341,7 @@ function Game({ id, me, go }) {
   return (
     <>
       <style>{STYLE}</style>
+      {st.msg && st.msg.n === st.n && Date.now() - recv.current < 5000 && <div className='flash'>{st.msg.t}</div>}
       <div className='bar'>
         {st.seats.map((pid, s) => { const c = clockOf(s), color = chess ? (s ? '#111' : '#fff') : COL[s]; return pid && (
           <div key={s} style={{ '--c': color }} className={'pl' + (!over && st.turn === s ? ' on' : '') + (st.alive && !st.alive[s] ? ' out' : '')}>
@@ -341,7 +352,7 @@ function Game({ id, me, go }) {
       </div>
       {res && <p className='big'>{res.winner ? `${name(res.winner).username} wins (${res.reason})` : `Draw (${res.reason})`}</p>}
       {!res && <div className={'turn' + (myTurn ? ' me' : '')}>{seat < 0 ? 'Spectating' : myTurn ? 'Your turn' : `${name(st.seats[st.turn]).username}'s turn`}</div>}
-      {boomMode && <p className='err'>Boom mode: tap any piece to blow it up (kings are safe).</p>}
+      {boomMode && <p className='err'>Boom mode: tap any piece to blow it up, kings too.</p>}
       <Board n={chess ? 8 : 14} cell={cell} pick={pick} />
       {err && <p className='err'>{err}</p>}
       <div className='moves' ref={mv}>{items.length ? items : 'No moves yet'}</div>
