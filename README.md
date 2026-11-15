@@ -1,15 +1,18 @@
-# Arena Shooter (Roblox)
+# Word Wars (Roblox)
 
-Free-for-all shooter. Everyone spawns with a pistol, and weapons (SMG, Shotgun, Sniper, Rocket) are scattered in floors, walls and rooftops of 9 buildings. Infinite respawns, kills and deaths on the leaderboard.
+Two-player word-guessing game: **Warmer or Colder**. Sit at a table in the lobby; when two players are seated a match starts. One player secretly picks a word, the other guesses and gets FREEZING / COLD / COOL / WARM / HOT / BURNING feedback based on semantic similarity.
 
-## How it works
-- Scripts live in `src/`.
-- `build.py` turns them into a Roblox place file with the arena.
-- GitHub Actions (`.github/workflows/publish.yml`) builds it and publishes to Roblox on every push to `main`.
+## Layout
+- `src/Main.server.lua` - bootstraps remotes, tables, leaderboard
+- `src/Modules/TableController.lua` - seating, match flow, scoring, validation (server authoritative)
+- `src/Modules/WordData.lua` - curated vocabulary with category + feature tags (server only)
+- `src/Modules/Similarity.lua` - similarity scoring and labels
+- `src/Client/GameUI.client.lua` + `UIKit.lua` - responsive UI
+- `build.py` - generates `WordWars.rbxlx` (lobby, tables, scripts)
+- `.github/workflows/publish.yml` - builds and publishes to Roblox on every push to `main`
 
-## One-time setup
-Add these repo secrets (Settings > Secrets and variables > Actions): `ROBLOX_API_KEY`, `ROBLOX_UNIVERSE_ID`, `ROBLOX_PLACE_ID`.
+## Setup
+Add repo secrets: `ROBLOX_API_KEY`, `ROBLOX_UNIVERSE_ID`, `ROBLOX_PLACE_ID`.
 
-## Admin commands (chat)
-`!fall`, `!kill`, `!gun`, `!slap`, `!tp`, `!speed`, `!rocket`, `!fling`, `!giant`, `!tiny`, `!normal`, `!event`.
-Add friends' UserIds to `ADMINS` in `src/Admin.server.lua` and `src/Chaos.server.lua`.
+## Adding words
+Edit `src/Modules/WordData.lua`. Each word is `word = "feature tags"` inside a category/subcategory. Words sharing a subcategory and tags score as closer.

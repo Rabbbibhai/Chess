@@ -24,4 +24,4 @@ jobs:
             "https://apis.roblox.com/universes/v1/${UNIVERSE_ID}/places/${PLACE_ID}/versions?versionType=Published" \
             -H "x-api-key: ${ROBLOX_API_KEY}" \
             -H "Content-Type: application/xml" \
-            --data-binary @ParkourGame.rbxlx
+            --data-binary @WordWars.rbxlx
