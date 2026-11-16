@@ -277,6 +277,7 @@ function check(){
     save();
     fb.className = "fb good"; fb.textContent = attempts === 0 ? "✓ Correct!" : "✓ Got it — keep practising this one";
     $("score").textContent = "✓ " + correct;
+    $("pattern").textContent = pattern(current, current.length); // fill in the gaps
     locked = true; inputEnabled = false; renderAnswer(); $("hintBtn").classList.add("hidden");
     $("check").textContent = "Next →";
     return;
@@ -291,6 +292,7 @@ function check(){
   } else {
     fb.className = "fb bad";
     fb.innerHTML = '<div class="diff">' + diffHTML(guess, current) + '</div><div style="font-weight:400;font-size:.9rem;margin-top:6px">Correct spelling shown above</div>';
+    $("pattern").textContent = pattern(current, current.length); // fill in the gaps
     locked = true; inputEnabled = false; renderAnswer(); $("hintBtn").classList.add("hidden");
     $("check").textContent = "Next →";
   }
