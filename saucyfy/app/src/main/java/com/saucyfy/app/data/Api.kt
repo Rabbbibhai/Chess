@@ -3,6 +3,8 @@ package com.saucyfy.app.data
 import android.content.Context
 import com.saucyfy.app.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
@@ -22,7 +24,6 @@ import java.util.concurrent.TimeUnit
 object Cfg {
     val supabaseUrl: String = BuildConfig.SUPABASE_URL.trim().trimEnd('/')
     val anonKey: String = BuildConfig.SUPABASE_ANON_KEY.trim()
-    val tmdbKey: String = BuildConfig.TMDB_API_KEY.trim()
     const val REDIRECT = "saucyfy://login-callback"
     val configured: Boolean get() = supabaseUrl.isNotBlank() && anonKey.isNotBlank()
 }
@@ -176,16 +177,44 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
     }
 }
 
+/**
+ * Public, key-free metadata:
+ *  - Movies: Apple iTunes Search / RSS
+ *  - Shows:  TVMaze
+ *  - Anime:  Jikan (MyAnimeList)
+ * Method names `hasTmdb` / `searchTmdb` are kept so the view model stays unchanged.
+ */
 class MetadataApi(private val http: Http) {
-    val hasTmdb: Boolean get() = Cfg.tmdbKey.isNotBlank()
+    val hasTmdb: Boolean get() = true
 
-    suspend fun searchTmdb(q: String, only: MediaType?): List<MediaResult> = when (only) {
-        MediaType.MOVIE -> tmdb("search/movie", mapOf("query" to q, "include_adult" to "false"), MediaType.MOVIE)
-        MediaType.TV -> tmdb("search/tv", mapOf("query" to q, "include_adult" to "false"), MediaType.TV)
-        else -> tmdb("search/multi", mapOf("query" to q, "include_adult" to "false"), null)
+    private val sizeRegex = Regex("\\d+x\\d+bb")
+    private val tagRegex = Regex("<[^>]*>")
+
+    private suspend fun getJson(url: HttpUrl, label: String): String {
+        val (code, body) = http.call(Request.Builder().url(url).build())
+        if (code !in 200..299) throw IOException("$label error $code")
+        return body
     }
 
-    suspend fun trending(): List<MediaResult> = tmdb("trending/all/week", emptyMap(), null)
+    /** Movies + shows search. */
+    suspend fun searchTmdb(q: String, only: MediaType?): List<MediaResult> = coroutineScope {
+        val movies = async {
+            if (only == MediaType.TV) emptyList<MediaResult>()
+            else runCatching { itunesMovies(q) }.getOrDefault(emptyList())
+        }
+        val shows = async {
+            if (only == MediaType.MOVIE) emptyList<MediaResult>()
+            else runCatching { tvmazeSearch(q) }.getOrDefault(emptyList())
+        }
+        movies.await() + shows.await()
+    }
+
+    /** Discover row: top movies on iTunes + shows airing today on TVMaze. */
+    suspend fun trending(): List<MediaResult> = coroutineScope {
+        val m = async { runCatching { itunesTopMovies() }.getOrDefault(emptyList()) }
+        val s = async { runCatching { tvmazeToday() }.getOrDefault(emptyList()) }
+        m.await() + s.await()
+    }
 
     suspend fun searchAnime(q: String): List<MediaResult> =
         jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"))
@@ -193,38 +222,99 @@ class MetadataApi(private val http: Http) {
     suspend fun topAnime(): List<MediaResult> =
         jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true"))
 
-    private suspend fun tmdb(path: String, params: Map<String, String>, forced: MediaType?): List<MediaResult> {
-        val url = HttpUrl.Builder().scheme("https").host("api.themoviedb.org")
-            .addPathSegments("3/$path")
-            .addQueryParameter("api_key", Cfg.tmdbKey)
-            .apply { params.forEach { (k, v) -> addQueryParameter(k, v) } }
+    // ---- iTunes (movies) ----
+    private suspend fun itunesMovies(q: String): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("itunes.apple.com").addPathSegment("search")
+            .addQueryParameter("term", q)
+            .addQueryParameter("media", "movie")
+            .addQueryParameter("entity", "movie")
+            .addQueryParameter("limit", "20")
             .build()
-        val (code, body) = http.call(Request.Builder().url(url).build())
-        if (code !in 200..299) throw IOException("TMDB error $code")
-        val arr = JSON.parseToJsonElement(body).jsonObject["results"] as? JsonArray ?: return emptyList()
+        val arr = JSON.parseToJsonElement(getJson(url, "Movie search")).jsonObject["results"] as? JsonArray
+            ?: return emptyList()
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
-            val mt = forced?.key ?: o.str("media_type")
-            val type = when (mt) {
-                "movie" -> MediaType.MOVIE
-                "tv" -> MediaType.TV
-                else -> return@mapNotNull null
-            }
-            val id = o.str("id") ?: return@mapNotNull null
-            val title = o.str("title") ?: o.str("name") ?: return@mapNotNull null
-            val date = o.str("release_date") ?: o.str("first_air_date") ?: ""
+            val id = o.str("trackId") ?: return@mapNotNull null
+            val title = o.str("trackName") ?: return@mapNotNull null
             MediaResult(
                 externalId = id,
-                type = type,
+                type = MediaType.MOVIE,
                 title = title,
-                year = date.take(4),
-                posterUrl = o.str("poster_path")?.let { "https://image.tmdb.org/t/p/w342$it" },
-                overview = o.str("overview") ?: "",
-                score = o.str("vote_average")?.toDoubleOrNull()
+                year = (o.str("releaseDate") ?: "").take(4),
+                posterUrl = o.str("artworkUrl100")?.replace(sizeRegex, "400x600bb"),
+                overview = o.str("longDescription") ?: o.str("shortDescription") ?: "",
+                score = null
             )
         }
     }
 
+    private suspend fun itunesTopMovies(): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("itunes.apple.com")
+            .addPathSegments("us/rss/topmovies/limit=20/json")
+            .build()
+        val feed = JSON.parseToJsonElement(getJson(url, "Top movies")).jsonObject["feed"] as? JsonObject
+            ?: return emptyList()
+        val arr = feed["entry"] as? JsonArray ?: return emptyList()
+        fun lbl(o: JsonObject, k: String): String? = (o[k] as? JsonObject)?.str("label")
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = ((o["id"] as? JsonObject)?.get("attributes") as? JsonObject)?.str("im:id")
+                ?: return@mapNotNull null
+            val title = lbl(o, "im:name") ?: return@mapNotNull null
+            val img = ((o["im:image"] as? JsonArray)?.lastOrNull() as? JsonObject)?.str("label")
+            MediaResult(
+                externalId = id,
+                type = MediaType.MOVIE,
+                title = title,
+                year = (lbl(o, "im:releaseDate") ?: "").take(4),
+                posterUrl = img?.replace(sizeRegex, "400x600bb"),
+                overview = lbl(o, "summary") ?: "",
+                score = null
+            )
+        }
+    }
+
+    // ---- TVMaze (shows) ----
+    private fun tvmazeShow(show: JsonObject): MediaResult? {
+        val id = show.str("id") ?: return null
+        val title = show.str("name") ?: return null
+        val img = show["image"] as? JsonObject
+        return MediaResult(
+            externalId = id,
+            type = MediaType.TV,
+            title = title,
+            year = (show.str("premiered") ?: "").take(4),
+            posterUrl = (img?.str("medium") ?: img?.str("original"))?.replace("http://", "https://"),
+            overview = (show.str("summary") ?: "").replace(tagRegex, "").trim(),
+            score = (show["rating"] as? JsonObject)?.str("average")?.toDoubleOrNull()
+        )
+    }
+
+    private suspend fun tvmazeSearch(q: String): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("api.tvmaze.com")
+            .addPathSegments("search/shows")
+            .addQueryParameter("q", q)
+            .build()
+        val arr = JSON.parseToJsonElement(getJson(url, "Show search")) as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val show = (el as? JsonObject)?.get("show") as? JsonObject ?: return@mapNotNull null
+            tvmazeShow(show)
+        }
+    }
+
+    private suspend fun tvmazeToday(): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("api.tvmaze.com")
+            .addPathSegments("schedule/web")
+            .build()
+        val arr = JSON.parseToJsonElement(getJson(url, "Schedule")) as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val embedded = (el as? JsonObject)?.get("_embedded") as? JsonObject ?: return@mapNotNull null
+            val show = embedded["show"] as? JsonObject ?: return@mapNotNull null
+            tvmazeShow(show)
+        }.filter { it.posterUrl != null }.distinctBy { it.externalId }.take(20)
+    }
+
+    // ---- Jikan (anime) ----
     private suspend fun jikan(path: String, params: Map<String, String>): List<MediaResult> {
         val url = HttpUrl.Builder().scheme("https").host("api.jikan.moe")
             .addPathSegments("v4/$path")

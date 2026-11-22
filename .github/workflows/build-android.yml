@@ -38,10 +38,6 @@ jobs:
 
       - name: Build APK
         working-directory: saucyfy
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: |
           gradle assembleRelease --no-daemon --stacktrace
           cp app/build/outputs/apk/release/app-release.apk Saucyfy.apk

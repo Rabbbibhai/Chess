@@ -42,7 +42,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.saucyfy.app.UiState
-import com.saucyfy.app.data.Cfg
 import com.saucyfy.app.data.Detail
 import com.saucyfy.app.data.LibraryItem
 import com.saucyfy.app.data.MediaResult
@@ -122,16 +121,13 @@ fun SearchScreen(
 
 @Composable
 private fun Discover(ui: UiState, onOpen: (Detail) -> Unit) {
-    val trending = ui.trending.filter { ui.filter == null || it.type == ui.filter }
+    val popular = ui.trending.filter { ui.filter == null || it.type == ui.filter }
     val anime = if (ui.filter == null || ui.filter == MediaType.ANIME) ui.topAnime else emptyList()
 
     Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-        if (!Cfg.tmdbKey.isNotBlank()) {
-            InfoCard("Movie and show search needs a free TMDB API key (see README). Anime search already works.")
-        }
-        if (trending.isNotEmpty()) PosterRow("Trending this week", trending, onOpen)
+        if (popular.isNotEmpty()) PosterRow("Popular now", popular, onOpen)
         if (anime.isNotEmpty()) PosterRow("Top airing anime", anime, onOpen)
-        if (trending.isEmpty() && anime.isEmpty()) {
+        if (popular.isEmpty() && anime.isEmpty()) {
             EmptyState("Search to get started", "Find a title, then save it to your library.")
         }
     }

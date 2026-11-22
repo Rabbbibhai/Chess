@@ -20,9 +20,13 @@ android {
         versionCode = runNumber
         versionName = "1.0.$runNumber"
 
-        buildConfigField("String", "SUPABASE_URL", "\"${env("SUPABASE_URL")}\"")
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${env("SUPABASE_ANON_KEY")}\"")
-        buildConfigField("String", "TMDB_API_KEY", "\"${env("TMDB_API_KEY")}\"")
+        // Falls back to the project's public values so the build works without secrets.
+        val supabaseUrl = env("SUPABASE_URL").ifBlank { "https://lnxybreoxrvbwlbepjsp.supabase.co" }
+        val supabaseAnon = env("SUPABASE_ANON_KEY").ifBlank {
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxueHlicmVveHJ2YndsYmVwanNwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUzMjAxOTUsImV4cCI6MjExMDg5NjE5NX0.N2RnLABMLf6l9UH_d_Vf8RXjWQX6cojOUX6272bXppQ"
+        }
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnon\"")
     }
 
     buildFeatures {

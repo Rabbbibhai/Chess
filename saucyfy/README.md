@@ -5,18 +5,15 @@ Track movies, shows and anime: save what you watched, rate it (1-10), and keep y
 - Kotlin + Jetpack Compose (Material 3, dark theme)
 - Google login via Supabase Auth
 - Library stored in Supabase Postgres (row level security, per user)
-- Metadata: TMDB (movies + shows) and Jikan / MyAnimeList (anime)
+- Metadata, no API keys needed: iTunes (movies), TVMaze (shows), Jikan / MyAnimeList (anime)
 
 ## One-time setup
 
-1. **Supabase**: create a project, open SQL editor, run `supabase/schema.sql`.
-2. **Google login**: Google Cloud Console -> OAuth client (type *Web*). Add redirect URI `https://YOUR-REF.supabase.co/auth/v1/callback`. Put the client id/secret in Supabase -> Authentication -> Providers -> Google.
+1. **Supabase**: schema is in `supabase/schema.sql` (already applied to the And-app project).
+2. **Google login**: Google Cloud Console -> OAuth client (type *Web*). Add redirect URI `https://lnxybreoxrvbwlbepjsp.supabase.co/auth/v1/callback`. Put the client id/secret in Supabase -> Authentication -> Providers -> Google.
 3. **Redirect allow-list**: Supabase -> Authentication -> URL Configuration -> Redirect URLs, add `saucyfy://login-callback`.
-4. **TMDB**: free key at themoviedb.org (Settings -> API) - v3 API key.
-5. **GitHub secrets** (repo -> Settings -> Secrets and variables -> Actions):
-   - `SUPABASE_URL` (https://YOUR-REF.supabase.co)
-   - `SUPABASE_ANON_KEY` (anon / publishable key)
-   - `TMDB_API_KEY`
+
+The build falls back to the And-app project's public URL and anon key. To point at another project, set the `SUPABASE_URL` and `SUPABASE_ANON_KEY` environment variables / secrets.
 
 ## Build the APK
 
