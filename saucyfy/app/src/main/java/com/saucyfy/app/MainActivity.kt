@@ -2,14 +2,12 @@ package com.saucyfy.app
 
 import android.content.Intent
 import android.graphics.Color
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.browser.customtabs.CustomTabsIntent
 import com.saucyfy.app.ui.App
 import com.saucyfy.app.ui.SaucyfyTheme
 
@@ -25,7 +23,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handle(intent)
         setContent {
             SaucyfyTheme {
-                App(vm = vm, onSignIn = { openLogin() })
+                App(vm = vm)
             }
         }
     }
@@ -35,14 +33,11 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
+    // Email confirmation links open saucyfy://login-callback#access_token=...
     private fun handle(i: Intent?) {
         val d = i?.data ?: return
         if (d.scheme == "saucyfy") {
             vm.handleRedirect(d.fragment ?: d.encodedQuery ?: "")
         }
-    }
-
-    private fun openLogin() {
-        CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(vm.loginUrl()))
     }
 }

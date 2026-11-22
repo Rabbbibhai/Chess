@@ -33,7 +33,7 @@ import com.saucyfy.app.UiState
 import com.saucyfy.app.data.Detail
 
 @Composable
-fun App(vm: AppViewModel, onSignIn: () -> Unit) {
+fun App(vm: AppViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
@@ -47,7 +47,7 @@ fun App(vm: AppViewModel, onSignIn: () -> Unit) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         when {
             ui.booting -> Unit
-            ui.session == null -> LoginScreen(onSignIn)
+            ui.session == null -> LoginScreen(busy = ui.authBusy, onSubmit = { e, p, up -> vm.authenticate(e, p, up) })
             else -> MainScaffold(vm, ui)
         }
         SnackbarHost(

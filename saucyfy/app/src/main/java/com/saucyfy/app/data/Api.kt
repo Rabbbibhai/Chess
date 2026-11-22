@@ -6,11 +6,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -19,6 +23,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object Cfg {
@@ -29,6 +34,19 @@ object Cfg {
 }
 
 class AuthExpired : Exception("Session expired. Please sign in again.")
+
+/** Spaces calls at least [minIntervalMs] apart (shared by everything using the same instance). */
+class RateLimiter(private val minIntervalMs: Long) {
+    private val mutex = Mutex()
+    private var next = 0L
+
+    suspend fun acquire() = mutex.withLock {
+        val now = System.currentTimeMillis()
+        val wait = next - now
+        if (wait > 0) delay(wait)
+        next = maxOf(now, next) + minIntervalMs
+    }
+}
 
 class Http {
     private val client = OkHttpClient.Builder()
@@ -60,20 +78,82 @@ class SessionStore(ctx: Context) {
 private val JSON_MT = "application/json".toMediaType()
 private fun nowSec() = System.currentTimeMillis() / 1000
 
+private fun errMsg(code: Int, body: String): String {
+    val o = runCatching { JSON.parseToJsonElement(body).jsonObject }.getOrNull()
+    val raw = o?.str("msg") ?: o?.str("error_description") ?: o?.str("message") ?: ""
+    return when {
+        code == 429 -> "Too many requests. Please wait a bit and try again."
+        raw.contains("rate limit", ignoreCase = true) -> "Email rate limit reached. Try again later."
+        raw.isNotBlank() -> raw.replaceFirstChar { it.uppercase() }
+        else -> "Request failed ($code)"
+    }
+}
+
 class SupabaseApi(private val http: Http, private val store: SessionStore) {
     private val base = Cfg.supabaseUrl
+    private val writeLimiter = RateLimiter(350)
 
-    fun loginUrl(): String =
-        "$base/auth/v1/authorize?provider=google&redirect_to=" + URLEncoder.encode(Cfg.REDIRECT, "UTF-8")
+    private fun jsonPost(url: String, json: String): Request =
+        Request.Builder().url(url)
+            .header("apikey", Cfg.anonKey)
+            .post(json.toRequestBody(JSON_MT))
+            .build()
 
-    /** Called with the fragment (or query) of the saucyfy://login-callback deep link. */
+    private fun credentials(email: String, password: String): String =
+        buildJsonObject {
+            put("email", email)
+            put("password", password)
+        }.toString()
+
+    private fun toSession(o: JsonObject): Session? {
+        val access = o.str("access_token") ?: return null
+        val user = o["user"] as? JsonObject ?: return null
+        val id = user.str("id") ?: return null
+        val meta = user["user_metadata"] as? JsonObject
+        val email = user.str("email") ?: ""
+        return Session(
+            accessToken = access,
+            refreshToken = o.str("refresh_token") ?: "",
+            expiresAt = nowSec() + (o.str("expires_in")?.toLongOrNull() ?: 3600L),
+            userId = id,
+            email = email,
+            name = meta?.str("full_name") ?: meta?.str("name") ?: email.substringBefore("@"),
+            avatar = meta?.str("avatar_url")
+        )
+    }
+
+    suspend fun signIn(email: String, password: String): Session {
+        val (code, body) = http.call(
+            jsonPost("$base/auth/v1/token?grant_type=password", credentials(email, password))
+        )
+        if (code !in 200..299) {
+            throw IOException(if (code == 400) "Invalid email or password" else errMsg(code, body))
+        }
+        val s = toSession(JSON.parseToJsonElement(body).jsonObject) ?: throw IOException("Sign-in failed")
+        store.save(s)
+        return s
+    }
+
+    /** Returns a session, or null when the project requires email confirmation first. */
+    suspend fun signUp(email: String, password: String): Session? {
+        val redirect = URLEncoder.encode(Cfg.REDIRECT, "UTF-8")
+        val (code, body) = http.call(
+            jsonPost("$base/auth/v1/signup?redirect_to=$redirect", credentials(email, password))
+        )
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        val s = toSession(JSON.parseToJsonElement(body).jsonObject)
+        if (s != null) store.save(s)
+        return s
+    }
+
+    /** Called with the fragment of a saucyfy://login-callback link (e.g. email confirmation). */
     suspend fun sessionFromRedirect(raw: String): Session {
         val p = raw.split("&").filter { it.contains("=") }.associate {
             val i = it.indexOf('=')
             URLDecoder.decode(it.substring(0, i), "UTF-8") to URLDecoder.decode(it.substring(i + 1), "UTF-8")
         }
         p["error_description"]?.let { throw IOException(it) }
-        val access = p["access_token"] ?: throw IOException("Sign-in did not return a session")
+        val access = p["access_token"] ?: throw IOException("Link did not contain a session")
         val refresh = p["refresh_token"] ?: ""
         val expiresIn = p["expires_in"]?.toLongOrNull() ?: 3600L
         val user = fetchUser(access)
@@ -103,18 +183,13 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
         if (s.refreshToken.isBlank()) {
             store.clear(); throw AuthExpired()
         }
-        val payload = """{"refresh_token":"${s.refreshToken}"}"""
-        val (code, resp) = http.call(
-            Request.Builder().url("$base/auth/v1/token?grant_type=refresh_token")
-                .header("apikey", Cfg.anonKey)
-                .post(payload.toRequestBody(JSON_MT))
-                .build()
-        )
+        val payload = buildJsonObject { put("refresh_token", s.refreshToken) }.toString()
+        val (code, resp) = http.call(jsonPost("$base/auth/v1/token?grant_type=refresh_token", payload))
         if (code !in 200..299) {
             if (code == 400 || code == 401 || code == 403) {
                 store.clear(); throw AuthExpired()
             }
-            throw IOException("Could not refresh your session ($code)")
+            throw IOException(errMsg(code, resp))
         }
         val o = JSON.parseToJsonElement(resp).jsonObject
         val ns = s.copy(
@@ -145,11 +220,12 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
                 .header("Authorization", "Bearer $t")
                 .build()
         }
-        if (code !in 200..299) throw IOException("Could not load library ($code). Did you run schema.sql?")
+        if (code !in 200..299) throw IOException(errMsg(code, body))
         return JSON.decodeFromString(ListSerializer(LibraryItem.serializer()), body)
     }
 
     suspend fun upsert(item: LibraryUpsert): LibraryItem {
+        writeLimiter.acquire()
         val json = JSON.encodeToString(LibraryUpsert.serializer(), item)
         val (code, body) = authed { t ->
             Request.Builder()
@@ -160,12 +236,13 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
                 .post(json.toRequestBody(JSON_MT))
                 .build()
         }
-        if (code !in 200..299) throw IOException("Could not save ($code)")
+        if (code !in 200..299) throw IOException(errMsg(code, body))
         return JSON.decodeFromString(ListSerializer(LibraryItem.serializer()), body).first()
     }
 
     suspend fun delete(id: String) {
-        val (code, _) = authed { t ->
+        writeLimiter.acquire()
+        val (code, body) = authed { t ->
             Request.Builder()
                 .url("$base/rest/v1/library_items?id=eq.$id")
                 .header("apikey", Cfg.anonKey)
@@ -173,12 +250,12 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
                 .delete()
                 .build()
         }
-        if (code !in 200..299) throw IOException("Could not remove ($code)")
+        if (code !in 200..299) throw IOException(errMsg(code, body))
     }
 }
 
 /**
- * Public, key-free metadata:
+ * Public, key-free metadata with per-host rate limiting and a small result cache:
  *  - Movies: Apple iTunes Search / RSS
  *  - Shows:  TVMaze
  *  - Anime:  Jikan (MyAnimeList)
@@ -190,24 +267,44 @@ class MetadataApi(private val http: Http) {
     private val sizeRegex = Regex("\\d+x\\d+bb")
     private val tagRegex = Regex("<[^>]*>")
 
-    private suspend fun getJson(url: HttpUrl, label: String): String {
+    private val itunesLimit = RateLimiter(1500)
+    private val tvmazeLimit = RateLimiter(500)
+    private val jikanLimit = RateLimiter(450)
+    private val cache = ConcurrentHashMap<String, List<MediaResult>>()
+
+    private suspend fun cached(key: String, load: suspend () -> List<MediaResult>): List<MediaResult> {
+        cache[key]?.let { return it }
+        val v = load()
+        if (v.isNotEmpty()) {
+            if (cache.size > 60) cache.clear()
+            cache[key] = v
+        }
+        return v
+    }
+
+    private suspend fun getJson(url: HttpUrl, label: String, limiter: RateLimiter): String {
+        limiter.acquire()
         val (code, body) = http.call(Request.Builder().url(url).build())
+        if (code == 429) throw IOException("$label is busy, try again in a moment")
         if (code !in 200..299) throw IOException("$label error $code")
         return body
     }
 
     /** Movies + shows search. */
-    suspend fun searchTmdb(q: String, only: MediaType?): List<MediaResult> = coroutineScope {
-        val movies = async {
-            if (only == MediaType.TV) emptyList<MediaResult>()
-            else runCatching { itunesMovies(q) }.getOrDefault(emptyList())
+    suspend fun searchTmdb(q: String, only: MediaType?): List<MediaResult> =
+        cached("t|$only|${q.lowercase()}") {
+            coroutineScope {
+                val movies = async {
+                    if (only == MediaType.TV) emptyList<MediaResult>()
+                    else runCatching { itunesMovies(q) }.getOrDefault(emptyList())
+                }
+                val shows = async {
+                    if (only == MediaType.MOVIE) emptyList<MediaResult>()
+                    else runCatching { tvmazeSearch(q) }.getOrDefault(emptyList())
+                }
+                movies.await() + shows.await()
+            }
         }
-        val shows = async {
-            if (only == MediaType.MOVIE) emptyList<MediaResult>()
-            else runCatching { tvmazeSearch(q) }.getOrDefault(emptyList())
-        }
-        movies.await() + shows.await()
-    }
 
     /** Discover row: top movies on iTunes + shows airing today on TVMaze. */
     suspend fun trending(): List<MediaResult> = coroutineScope {
@@ -217,7 +314,9 @@ class MetadataApi(private val http: Http) {
     }
 
     suspend fun searchAnime(q: String): List<MediaResult> =
-        jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"))
+        cached("a|${q.lowercase()}") {
+            jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"))
+        }
 
     suspend fun topAnime(): List<MediaResult> =
         jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true"))
@@ -230,7 +329,7 @@ class MetadataApi(private val http: Http) {
             .addQueryParameter("entity", "movie")
             .addQueryParameter("limit", "20")
             .build()
-        val arr = JSON.parseToJsonElement(getJson(url, "Movie search")).jsonObject["results"] as? JsonArray
+        val arr = JSON.parseToJsonElement(getJson(url, "Movie search", itunesLimit)).jsonObject["results"] as? JsonArray
             ?: return emptyList()
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
@@ -252,7 +351,7 @@ class MetadataApi(private val http: Http) {
         val url = HttpUrl.Builder().scheme("https").host("itunes.apple.com")
             .addPathSegments("us/rss/topmovies/limit=20/json")
             .build()
-        val feed = JSON.parseToJsonElement(getJson(url, "Top movies")).jsonObject["feed"] as? JsonObject
+        val feed = JSON.parseToJsonElement(getJson(url, "Top movies", itunesLimit)).jsonObject["feed"] as? JsonObject
             ?: return emptyList()
         val arr = feed["entry"] as? JsonArray ?: return emptyList()
         fun lbl(o: JsonObject, k: String): String? = (o[k] as? JsonObject)?.str("label")
@@ -295,7 +394,7 @@ class MetadataApi(private val http: Http) {
             .addPathSegments("search/shows")
             .addQueryParameter("q", q)
             .build()
-        val arr = JSON.parseToJsonElement(getJson(url, "Show search")) as? JsonArray ?: return emptyList()
+        val arr = JSON.parseToJsonElement(getJson(url, "Show search", tvmazeLimit)) as? JsonArray ?: return emptyList()
         return arr.mapNotNull { el ->
             val show = (el as? JsonObject)?.get("show") as? JsonObject ?: return@mapNotNull null
             tvmazeShow(show)
@@ -306,7 +405,7 @@ class MetadataApi(private val http: Http) {
         val url = HttpUrl.Builder().scheme("https").host("api.tvmaze.com")
             .addPathSegments("schedule/web")
             .build()
-        val arr = JSON.parseToJsonElement(getJson(url, "Schedule")) as? JsonArray ?: return emptyList()
+        val arr = JSON.parseToJsonElement(getJson(url, "Schedule", tvmazeLimit)) as? JsonArray ?: return emptyList()
         return arr.mapNotNull { el ->
             val embedded = (el as? JsonObject)?.get("_embedded") as? JsonObject ?: return@mapNotNull null
             val show = embedded["show"] as? JsonObject ?: return@mapNotNull null
@@ -320,9 +419,11 @@ class MetadataApi(private val http: Http) {
             .addPathSegments("v4/$path")
             .apply { params.forEach { (k, v) -> addQueryParameter(k, v) } }
             .build()
+        jikanLimit.acquire()
         var res = http.call(Request.Builder().url(url).build())
         if (res.first == 429) {
             delay(1200)
+            jikanLimit.acquire()
             res = http.call(Request.Builder().url(url).build())
         }
         if (res.first !in 200..299) throw IOException("Anime search failed (${res.first})")

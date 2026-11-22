@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 data class UiState(
     val booting: Boolean = true,
     val session: Session? = null,
+    val authBusy: Boolean = false,
     val library: List<LibraryItem> = emptyList(),
     val libLoading: Boolean = false,
     val query: String = "",
@@ -39,6 +40,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     private var searchJob: Job? = null
+    private val attempts = ArrayDeque<Long>()
 
     init {
         val s = store.get()
@@ -49,10 +51,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun loginUrl(): String = api.loginUrl()
-
     fun clearMessage() {
         _ui.update { it.copy(message = null) }
+    }
+
+    private fun toast(msg: String) {
+        _ui.update { it.copy(message = msg) }
     }
 
     private fun launchSafe(block: suspend () -> Unit): Job = viewModelScope.launch {
@@ -60,14 +64,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             block()
         } catch (e: AuthExpired) {
             signOut()
-            _ui.update { it.copy(message = e.message) }
+            toast(e.message ?: "Please sign in again")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _ui.update { it.copy(message = e.message ?: "Something went wrong") }
+            toast(e.message ?: "Something went wrong")
         }
     }
 
+    // ---- auth (with attempt lockout: 5 tries per minute) ----
+    private fun lockedSeconds(): Long {
+        val now = System.currentTimeMillis()
+        while (attempts.isNotEmpty() && now - attempts.first() > 60_000) attempts.removeFirst()
+        return if (attempts.size >= 5) (60_000 - (now - attempts.first())) / 1000 + 1 else 0L
+    }
+
+    fun authenticate(email: String, password: String, signUp: Boolean) {
+        val e = email.trim()
+        if (!e.contains("@") || e.length < 5) {
+            toast("Enter a valid email address"); return
+        }
+        if (password.length < 8) {
+            toast("Password must be at least 8 characters"); return
+        }
+        val wait = lockedSeconds()
+        if (wait > 0) {
+            toast("Too many attempts. Try again in ${wait}s"); return
+        }
+        if (_ui.value.authBusy) return
+        attempts.addLast(System.currentTimeMillis())
+        _ui.update { it.copy(authBusy = true) }
+        launchSafe {
+            try {
+                val s = if (signUp) api.signUp(e, password) else api.signIn(e, password)
+                if (s == null) {
+                    toast("Account created. Check your email to confirm it, then sign in.")
+                } else {
+                    attempts.clear()
+                    _ui.update { it.copy(session = s) }
+                    refreshLibrary()
+                    loadDiscover()
+                }
+            } finally {
+                _ui.update { it.copy(authBusy = false) }
+            }
+        }
+    }
+
+    /** Handles saucyfy://login-callback links (email confirmation). */
     fun handleRedirect(raw: String) {
         launchSafe {
             val s = api.sessionFromRedirect(raw)
@@ -113,7 +157,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         searchJob = viewModelScope.launch {
-            delay(450)
+            delay(500)
             runSearch(q.trim(), _ui.value.filter)
         }
     }
@@ -179,7 +223,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             )
             replaceLocal(saved)
             onDone()
-            _ui.update { it.copy(message = "Saved to your library") }
+            toast("Saved to your library")
         }
     }
 
@@ -197,7 +241,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             api.delete(id)
             _ui.update { st -> st.copy(library = st.library.filterNot { it.id == id }) }
             onDone()
-            _ui.update { it.copy(message = "Removed from your library") }
+            toast("Removed from your library")
         }
     }
 }
