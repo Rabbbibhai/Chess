@@ -3,6 +3,9 @@ name: Publish to Roblox
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "saucyfy/**"
+      - ".github/workflows/build-android.yml"
   workflow_dispatch:
 
 jobs:

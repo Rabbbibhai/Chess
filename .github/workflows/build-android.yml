@@ -1,0 +1,59 @@
+name: Build Saucyfy APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "saucyfy/**"
+      - ".github/workflows/build-android.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate app icons from your artwork
+        working-directory: saucyfy
+        run: |
+          pip install pillow
+          python tools/make_icons.py
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        working-directory: saucyfy
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          gradle assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk Saucyfy.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Saucyfy-apk
+          path: saucyfy/Saucyfy.apk
+
+      - name: Publish release (easy phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: saucyfy-build-${{ github.run_number }}
+          name: Saucyfy build ${{ github.run_number }}
+          files: saucyfy/Saucyfy.apk
