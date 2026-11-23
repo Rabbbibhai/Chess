@@ -1,30 +1,29 @@
-# Saucyfy
+# Elog
 
-Track movies, shows and anime: save what you finished, rate it (1-10), keep your place (season / episode), and see your friends' lists.
+Track movies, shows and anime: save what you finished, rate it (1-10), keep your place (season / episode), see your friends' lists, and chat with them.
 
-- Kotlin + Jetpack Compose (Material 3)
-- 7 built-in themes (Midnight, AMOLED, Ocean, Forest, Sunset, Sakura, Daylight) - Profile tab
-- Email + password login via Supabase Auth (no third-party app registration)
+(The code folder is still called `saucyfy/` and the internal app id is `com.saucyfy.app`, so new builds install over old ones and keep you signed in.)
+
+- Kotlin + Jetpack Compose (Material 3), 7 themes
+- Email + password login via Supabase Auth
 - Library in Supabase Postgres (row level security, per user)
-- Friends: find people by username, send / accept requests, view a friend's list (read-only) and add titles from it to yours
-- Profile name, username and photo (photo max 1 MB, auto-compressed)
-- Search: movies (iTunes), shows (TVMaze), anime (Jikan) in parallel, results appear as each answers; spelling help ("showing results for ..." / "did you mean ...?")
+- Friends: find people by username, send / accept requests, view a friend's list (read-only)
+- **Chats (very low database use):** history is stored on the phones. The server `mailbox` table only holds a message until the recipient's app downloads it, then it is deleted (undelivered mail expires after 14 days). Max 500 characters per message, 30 messages / minute, 100 unread per person. While the app is open it checks for new messages every 20 s (4 s inside a chat). GIFs are sent as a ~60-byte link (reaction GIFs from nekos.best, no key).
+- Search: Cinemeta/iTunes (movies), TVMaze (shows), Jikan/Kitsu (anime) in parallel with fallbacks; spelling help
 - Real season / episode limits per title
-- Speed: library cached on disk (opens instantly), image + HTTP caches, optimistic updates
-- Rate limiting: per-host request spacing, write throttling, login lockout, DB write limit (60/min), friend requests (20/hour)
+- Speed: library cached on disk, image + HTTP caches, optimistic updates
+- Rate limiting: per-host request spacing, write throttling, login lockout, DB limits
 - One account per network (IP): Postgres auth hook `public.hook_before_user_created`
 
 ## Supabase dashboard settings (one-time)
 
 1. Authentication -> Sign In / Providers -> **Confirm email OFF**.
-2. Authentication -> Auth Hooks -> **Before User Created** -> Postgres function -> `public.hook_before_user_created` (one account per IP).
-
-The database (tables, grants, storage bucket, friends, rate limits) is already applied to the And-app project.
+2. Authentication -> Auth Hooks -> **Before User Created** -> Postgres function -> `public.hook_before_user_created`.
 
 ## Build the APK
 
-Actions -> **Build Saucyfy APK** -> Run workflow. Download `Saucyfy.apk` from the repo's Releases page.
+Actions -> **Build Elog APK** -> Run workflow. Download `Elog.apk` from the repo's Releases page.
 
 ## App icon
 
-Upload your image anywhere inside `saucyfy/assets/` (png / jpg / jpeg / webp, any file name). The build uses the largest image in that folder.
+Upload your image anywhere inside `saucyfy/assets/` (png / jpg / jpeg / webp, any file name). The largest image there is used.

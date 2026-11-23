@@ -65,7 +65,7 @@ fun ProfileScreen(
     val lib = ui.library
     val rated = lib.mapNotNull { it.rating }.filter { it > 0 }
     val avg = if (rated.isEmpty()) "-" else "%.1f".format(rated.average())
-    val name = session?.name?.ifBlank { null } ?: "Saucy watcher"
+    val name = session?.name?.ifBlank { null } ?: "Elog watcher"
 
     var editing by remember { mutableStateOf(false) }
     var nameDraft by remember { mutableStateOf("") }
@@ -235,7 +235,7 @@ fun ProfileScreen(
             Text("  Sign out")
         }
         Text(
-            "Saucyfy ${BuildConfig.VERSION_NAME}",
+            "Elog ${BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center

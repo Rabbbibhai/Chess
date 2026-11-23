@@ -14,6 +14,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
+        // Internal id kept so Elog installs over the previous build and keeps you signed in.
         applicationId = "com.saucyfy.app"
         minSdk = 26
         targetSdk = 34
@@ -64,6 +65,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.browser:browser:1.8.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-gif:2.7.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

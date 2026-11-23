@@ -1,4 +1,4 @@
-name: Build Saucyfy APK
+name: Build Elog APK
 
 on:
   workflow_dispatch:
@@ -40,16 +40,16 @@ jobs:
         working-directory: saucyfy
         run: |
           gradle assembleRelease --no-daemon --stacktrace
-          cp app/build/outputs/apk/release/app-release.apk Saucyfy.apk
+          cp app/build/outputs/apk/release/app-release.apk Elog.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Saucyfy-apk
-          path: saucyfy/Saucyfy.apk
+          name: Elog-apk
+          path: saucyfy/Elog.apk
 
       - name: Publish release (easy phone download)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: saucyfy-build-${{ github.run_number }}
-          name: Saucyfy build ${{ github.run_number }}
-          files: saucyfy/Saucyfy.apk
+          tag_name: elog-build-${{ github.run_number }}
+          name: Elog build ${{ github.run_number }}
+          files: saucyfy/Elog.apk

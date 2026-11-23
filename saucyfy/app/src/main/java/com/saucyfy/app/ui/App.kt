@@ -11,10 +11,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -24,6 +27,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +37,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saucyfy.app.AppViewModel
 import com.saucyfy.app.UiState
@@ -42,6 +49,17 @@ import com.saucyfy.app.data.Detail
 fun App(vm: AppViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Only check for new messages while the app is on screen.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) vm.setForeground(true)
+            else if (event == Lifecycle.Event.ON_STOP) vm.setForeground(false)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(ui.message) {
         ui.message?.let {
@@ -70,34 +88,46 @@ fun App(vm: AppViewModel) {
 private fun MainScaffold(vm: AppViewModel, ui: UiState) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Detail?>(null) }
+    val totalUnread = ui.unread.values.sum()
+    val chatOpen = tab == 3 && ui.chatWith != null
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) vm.setAvatar(uri)
     }
 
     LaunchedEffect(tab) {
-        if (tab == 2) vm.loadFriends()
+        if (tab == 2 || tab == 3) vm.loadFriends()
     }
-    // Back from a friend's list returns to the Friends list.
+    // Back from a chat / a friend's list returns to the list.
+    BackHandler(enabled = chatOpen) { vm.closeChat() }
     BackHandler(enabled = tab == 2 && ui.viewingFriend != null) { vm.closeFriend() }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                val tabs = listOf(
-                    "Library" to Icons.Filled.Home,
-                    "Discover" to Icons.Filled.Search,
-                    "Friends" to Icons.Filled.Favorite,
-                    "Profile" to Icons.Filled.Person
-                )
-                tabs.forEachIndexed { i, (label, icon) ->
-                    NavigationBarItem(
-                        selected = tab == i,
-                        onClick = { tab = i },
-                        icon = { Icon(icon, label) },
-                        label = { Text(label) }
+            if (!chatOpen) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                    val tabs = listOf(
+                        "Library" to Icons.Filled.Home,
+                        "Discover" to Icons.Filled.Search,
+                        "Friends" to Icons.Filled.Favorite,
+                        "Chats" to Icons.Filled.Email,
+                        "Profile" to Icons.Filled.Person
                     )
+                    tabs.forEachIndexed { i, (label, icon) ->
+                        NavigationBarItem(
+                            selected = tab == i,
+                            onClick = { tab = i },
+                            icon = {
+                                if (i == 3 && totalUnread > 0) {
+                                    BadgedBox(badge = { Badge { Text("$totalUnread") } }) { Icon(icon, label) }
+                                } else {
+                                    Icon(icon, label)
+                                }
+                            },
+                            label = { Text(label) }
+                        )
+                    }
                 }
             }
         }
@@ -145,6 +175,24 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                             onRefresh = { vm.loadFriends() },
                             modifier = m
                         )
+                    }
+                }
+                3 -> {
+                    val cw = ui.chatWith
+                    if (cw != null) {
+                        ChatScreen(
+                            friend = cw,
+                            msgs = ui.chats[cw.id] ?: emptyList(),
+                            gifs = ui.gifs,
+                            gifsLoading = ui.gifsLoading,
+                            gifCategory = ui.gifCategory,
+                            onBack = { vm.closeChat() },
+                            onSend = { vm.sendMessage(cw, it) },
+                            onLoadGifs = { vm.loadGifs(it) },
+                            modifier = m
+                        )
+                    } else {
+                        ChatListScreen(ui = ui, onOpen = { vm.openChat(it) }, modifier = m)
                     }
                 }
                 else -> ProfileScreen(

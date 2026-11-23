@@ -1,7 +1,7 @@
 package com.saucyfy.app.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -67,13 +67,13 @@ fun LoginScreen(busy: Boolean, onSubmit: (email: String, password: String, signU
             Spacer(Modifier.height(32.dp))
             Image(
                 painterResource(R.drawable.logo),
-                contentDescription = "Saucyfy",
+                contentDescription = "Elog",
                 modifier = Modifier
                     .size(112.dp)
                     .clip(RoundedCornerShape(28.dp))
             )
             Spacer(Modifier.height(20.dp))
-            Text("Saucyfy", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+            Text("Elog", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text(
                 "Your movies, shows and anime - rated, tracked, and always right where you left off.",

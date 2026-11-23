@@ -1,17 +1,23 @@
 package com.saucyfy.app
 
 import android.app.Application
+import android.os.Build
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 
-/** App-wide image cache: 25% of RAM in memory + 150 MB on disk, with fade-in. */
+/** App-wide image cache (25% of RAM + 150 MB disk), fade-in, and animated GIF support. */
 class SaucyfyApp : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader =
         ImageLoader.Builder(this)
             .crossfade(true)
             .respectCacheHeaders(false)
+            .components {
+                if (Build.VERSION.SDK_INT >= 28) add(ImageDecoderDecoder.Factory()) else add(GifDecoder.Factory())
+            }
             .memoryCache { MemoryCache.Builder(this).maxSizePercent(0.25).build() }
             .diskCache {
                 DiskCache.Builder()

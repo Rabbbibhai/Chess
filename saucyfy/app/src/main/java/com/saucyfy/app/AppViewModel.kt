@@ -20,9 +20,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.UUID
 
 data class UiState(
     val booting: Boolean = true,
@@ -50,12 +53,19 @@ data class UiState(
     val viewingFriend: Profile? = null,
     val friendItems: List<LibraryItem> = emptyList(),
     val friendItemsLoading: Boolean = false,
+    val chats: Map<String, List<ChatMsg>> = emptyMap(),
+    val unread: Map<String, Int> = emptyMap(),
+    val chatWith: Profile? = null,
+    val gifs: List<String> = emptyList(),
+    val gifsLoading: Boolean = false,
+    val gifCategory: String = "happy",
     val message: String? = null
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = SessionStore(app)
     private val libCache = LibraryCache(app)
+    private val chatStore = ChatStore(app)
     private val themePrefs = app.getSharedPreferences("saucyfy_theme", Context.MODE_PRIVATE)
     private val http = Http(app.cacheDir)
     private val api = SupabaseApi(http, store)
@@ -66,14 +76,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var searchJob: Job? = null
     private var userJob: Job? = null
+    private var pollJob: Job? = null
+    private var foreground = true
+    private val chatLock = Mutex()
     private val attempts = ArrayDeque<Long>()
 
     init {
         val s = store.get()
         // Show the last-known library instantly, then refresh in the background.
         val cached: List<LibraryItem> = s?.let { libCache.get(it.userId) } ?: emptyList()
+        val unread: Map<String, Int> = s?.let { chatStore.allUnread(it.userId) } ?: emptyMap()
         val theme = themePrefs.getString("id", "midnight") ?: "midnight"
-        _ui.update { it.copy(session = s, booting = false, library = cached, themeId = theme) }
+        _ui.update { it.copy(session = s, booting = false, library = cached, unread = unread, themeId = theme) }
         if (s != null) onSignedIn()
     }
 
@@ -81,6 +95,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshLibrary()
         loadDiscover()
         loadMe()
+        startPolling()
     }
 
     fun clearMessage() {
@@ -145,7 +160,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     attempts.clear()
                     val cached: List<LibraryItem> = libCache.get(s.userId) ?: emptyList()
-                    _ui.update { it.copy(session = s, library = cached) }
+                    val unread = chatStore.allUnread(s.userId)
+                    _ui.update { it.copy(session = s, library = cached, unread = unread) }
                     onSignedIn()
                 }
             } finally {
@@ -168,6 +184,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         libCache.clear()
         searchJob?.cancel()
         userJob?.cancel()
+        pollJob?.cancel()
         _ui.update { UiState(booting = false, themeId = it.themeId, trending = it.trending, topAnime = it.topAnime) }
     }
 
@@ -307,33 +324,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         onQuery(_ui.value.query)
     }
 
-    private suspend fun searchAll(q: String, f: MediaType?, onPartial: (List<MediaResult>) -> Unit): List<MediaResult> =
-        coroutineScope {
-            val parts = arrayOfNulls<List<MediaResult>>(3)
-            fun emit() = onPartial(parts.filterNotNull().flatten())
-            val jobs = listOf(
-                async {
-                    if (f == null || f == MediaType.MOVIE) {
-                        parts[0] = runCatching { meta.searchMovies(q) }.getOrDefault(emptyList())
-                        emit()
-                    }
-                },
-                async {
-                    if (f == null || f == MediaType.TV) {
-                        parts[1] = runCatching { meta.searchShows(q) }.getOrDefault(emptyList())
-                        emit()
-                    }
-                },
-                async {
-                    if (f == null || f == MediaType.ANIME) {
-                        parts[2] = runCatching { meta.searchAnime(q) }.getOrDefault(emptyList())
-                        emit()
-                    }
+    private suspend fun searchAll(
+        q: String,
+        f: MediaType?,
+        errors: MutableList<String>,
+        onPartial: (List<MediaResult>) -> Unit
+    ): List<MediaResult> = coroutineScope {
+        val parts = arrayOfNulls<List<MediaResult>>(3)
+        fun emit() = onPartial(parts.filterNotNull().flatten())
+        val jobs = listOf(
+            async {
+                if (f == null || f == MediaType.MOVIE) {
+                    parts[0] = runCatching { meta.searchMovies(q) }
+                        .onFailure { errors += "Movies: ${it.message}" }
+                        .getOrDefault(emptyList())
+                    emit()
                 }
-            )
-            jobs.awaitAll()
-            parts.filterNotNull().flatten()
-        }
+            },
+            async {
+                if (f == null || f == MediaType.TV) {
+                    parts[1] = runCatching { meta.searchShows(q) }
+                        .onFailure { errors += "Shows: ${it.message}" }
+                        .getOrDefault(emptyList())
+                    emit()
+                }
+            },
+            async {
+                if (f == null || f == MediaType.ANIME) {
+                    parts[2] = runCatching { meta.searchAnime(q) }
+                        .onFailure { errors += "Anime: ${it.message}" }
+                        .getOrDefault(emptyList())
+                    emit()
+                }
+            }
+        )
+        jobs.awaitAll()
+        parts.filterNotNull().flatten()
+    }
 
     private fun localTitles(): List<String> {
         val st = _ui.value
@@ -343,12 +370,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runSearch(q: String, f: MediaType?) {
         _ui.update { it.copy(searching = true, suggestion = null, corrected = null) }
         try {
-            val out = searchAll(q, f) { partial -> _ui.update { it.copy(results = partial) } }
+            val errors = mutableListOf<String>()
+            val out = searchAll(q, f, errors) { partial -> _ui.update { it.copy(results = partial) } }
+            if (errors.isNotEmpty() && out.isEmpty()) {
+                toast("Couldn't reach: " + errors.joinToString("; ").take(150))
+            }
             if (out.isEmpty()) {
                 // Nothing found: try your own titles first (instant), then Wikipedia's spelling correction.
                 val alt = closestTitle(q, localTitles()) ?: runCatching { meta.suggest(q) }.getOrNull()
                 if (alt != null) {
-                    val fixed = searchAll(alt, f) { }
+                    val fixed = searchAll(alt, f, mutableListOf()) { }
                     if (fixed.isNotEmpty()) {
                         _ui.update { it.copy(results = fixed, corrected = alt) }
                     } else {
@@ -439,7 +470,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(friendsLoading = true) }
             try {
                 val f = api.loadFriends()
-                _ui.update { it.copy(friends = f) }
+                val me = _ui.value.session?.userId
+                val loaded: Map<String, List<ChatMsg>> = if (me == null) emptyMap() else withContext(Dispatchers.IO) {
+                    f.filter { it.accepted }.associate { it.profile.id to chatStore.load(me, it.profile.id) }
+                }
+                _ui.update { st -> st.copy(friends = f, chats = loaded + st.chats) }
             } finally {
                 _ui.update { it.copy(friendsLoading = false) }
             }
@@ -501,7 +536,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { st ->
                 st.copy(
                     friends = f,
-                    viewingFriend = if (st.viewingFriend?.id == e.profile.id) null else st.viewingFriend
+                    viewingFriend = if (st.viewingFriend?.id == e.profile.id) null else st.viewingFriend,
+                    chatWith = if (st.chatWith?.id == e.profile.id) null else st.chatWith
                 )
             }
         }
@@ -521,5 +557,107 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeFriend() {
         _ui.update { it.copy(viewingFriend = null, friendItems = emptyList()) }
+    }
+
+    // ---- chat: history lives on the device; the server only holds a message until it's downloaded ----
+    fun setForeground(f: Boolean) {
+        foreground = f
+        if (f) startPolling() else pollJob?.cancel()
+    }
+
+    private fun startPolling() {
+        pollJob?.cancel()
+        if (!foreground || _ui.value.session == null) return
+        pollJob = viewModelScope.launch {
+            while (true) {
+                try {
+                    pollInbox()
+                } catch (e: AuthExpired) {
+                    signOut()
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // offline or temporary error: try again next round
+                }
+                delay(if (_ui.value.chatWith != null) 4000L else 20000L)
+            }
+        }
+    }
+
+    private fun parseTs(s: String): Long =
+        runCatching { java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli() }
+            .getOrDefault(System.currentTimeMillis())
+
+    private suspend fun appendChat(me: String, friend: String, add: List<ChatMsg>) = chatLock.withLock {
+        val cur = _ui.value.chats[friend] ?: withContext(Dispatchers.IO) { chatStore.load(me, friend) }
+        val known = cur.map { it.id }.toHashSet()
+        val merged = (cur + add.filter { it.id !in known }).sortedBy { it.ts }.takeLast(300)
+        withContext(Dispatchers.IO) { chatStore.save(me, friend, merged) }
+        _ui.update { it.copy(chats = it.chats + (friend to merged)) }
+    }
+
+    private suspend fun removeChatMsg(me: String, friend: String, id: String) = chatLock.withLock {
+        val cur = _ui.value.chats[friend] ?: return@withLock
+        val merged = cur.filter { it.id != id }
+        withContext(Dispatchers.IO) { chatStore.save(me, friend, merged) }
+        _ui.update { it.copy(chats = it.chats + (friend to merged)) }
+    }
+
+    private suspend fun pollInbox() {
+        val me = _ui.value.session?.userId ?: return
+        val inbox = api.fetchMailbox()
+        if (inbox.isEmpty()) return
+        for ((sender, msgs) in inbox.groupBy { it.sender }) {
+            val known: Set<String> = _ui.value.chats[sender]?.map { it.id }?.toSet()
+                ?: withContext(Dispatchers.IO) { chatStore.load(me, sender).map { it.id }.toSet() }
+            val fresh = msgs.filter { it.id !in known }
+            appendChat(me, sender, msgs.map { ChatMsg(it.id, false, it.body, parseTs(it.createdAt)) })
+            if (fresh.isNotEmpty() && _ui.value.chatWith?.id != sender) {
+                val n = (_ui.value.unread[sender] ?: 0) + fresh.size
+                chatStore.setUnread(me, sender, n)
+                _ui.update { it.copy(unread = it.unread + (sender to n)) }
+            }
+        }
+        // Saved on this device first, now free the server space.
+        api.deleteMailbox(inbox.map { it.id })
+    }
+
+    fun openChat(p: Profile) {
+        val me = _ui.value.session?.userId ?: return
+        _ui.update { it.copy(chatWith = p, unread = it.unread - p.id) }
+        chatStore.setUnread(me, p.id, 0)
+        viewModelScope.launch {
+            if (_ui.value.chats[p.id] == null) appendChat(me, p.id, emptyList())
+            runCatching { pollInbox() }
+        }
+    }
+
+    fun closeChat() {
+        _ui.update { it.copy(chatWith = null) }
+    }
+
+    fun sendMessage(to: Profile, body: String) {
+        val text = body.trim().take(500)
+        if (text.isEmpty()) return
+        val me = _ui.value.session?.userId ?: return
+        val msg = ChatMsg(UUID.randomUUID().toString(), true, text, System.currentTimeMillis())
+        viewModelScope.launch { appendChat(me, to.id, listOf(msg)) }
+        launchSafe {
+            try {
+                api.sendMessage(to.id, text)
+            } catch (e: Exception) {
+                removeChatMsg(me, to.id, msg.id)
+                throw e
+            }
+        }
+    }
+
+    fun loadGifs(category: String) {
+        _ui.update { it.copy(gifCategory = category, gifsLoading = true) }
+        viewModelScope.launch {
+            val g = runCatching { meta.gifs(category) }.getOrDefault(emptyList())
+            _ui.update { if (it.gifCategory == category) it.copy(gifs = g, gifsLoading = false) else it }
+        }
     }
 }

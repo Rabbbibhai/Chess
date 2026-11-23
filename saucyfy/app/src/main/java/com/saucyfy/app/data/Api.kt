@@ -420,24 +420,61 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
         val (code, body) = authed { t -> rest("friendships?id=eq.$friendshipId", t).delete().build() }
         if (code !in 200..299) throw IOException(errMsg(code, body))
     }
+
+    // ---- messaging (server only holds a message until it is downloaded) ----
+    suspend fun sendMessage(toId: String, body: String) {
+        val payload = buildJsonObject {
+            put("recipient", toId)
+            put("body", body)
+        }.toString()
+        val (code, resp) = authed { t ->
+            rest("mailbox", t)
+                .header("Prefer", "return=minimal")
+                .post(payload.toRequestBody(JSON_MT))
+                .build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, resp))
+    }
+
+    suspend fun fetchMailbox(): List<MailMsg> {
+        val (code, body) = authed { t ->
+            rest("mailbox?select=id,sender,body,created_at&order=created_at.asc&limit=100", t).build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        return JSON.decodeFromString(ListSerializer(MailMsg.serializer()), body)
+    }
+
+    suspend fun deleteMailbox(ids: List<String>) {
+        if (ids.isEmpty()) return
+        val (code, body) = authed { t ->
+            rest("mailbox?id=in.(${ids.joinToString(",")})", t).delete().build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+    }
 }
 
 /**
- * Public, key-free metadata with per-host rate limiting and a small result cache:
- *  - Movies: Apple iTunes Search / RSS
+ * Public, key-free metadata with per-host rate limiting, a result cache and fallbacks:
+ *  - Movies: Cinemeta (IMDb)   -> fallback Apple iTunes
  *  - Shows:  TVMaze
- *  - Anime:  Jikan (MyAnimeList)
+ *  - Anime:  Jikan (MyAnimeList) -> fallback Kitsu
  *  - Spelling suggestions: Wikipedia search
+ *  - Reaction GIFs: nekos.best
  */
 class MetadataApi(private val http: Http) {
     private val sizeRegex = Regex("\\d+x\\d+bb")
     private val tagRegex = Regex("<[^>]*>")
+    private val kitsuAccept = "application/vnd.api+json"
 
     private val itunesLimit = RateLimiter(1200)
+    private val cinemetaLimit = RateLimiter(300)
     private val tvmazeLimit = RateLimiter(400)
     private val jikanLimit = RateLimiter(450)
+    private val kitsuLimit = RateLimiter(300)
     private val wikiLimit = RateLimiter(400)
+    private val gifLimit = RateLimiter(300)
     private val cache = ConcurrentHashMap<String, List<MediaResult>>()
+    private val gifCache = ConcurrentHashMap<String, List<String>>()
 
     private suspend fun cached(key: String, load: suspend () -> List<MediaResult>): List<MediaResult> {
         cache[key]?.let { return it }
@@ -449,32 +486,61 @@ class MetadataApi(private val http: Http) {
         return v
     }
 
-    private suspend fun getJson(url: HttpUrl, label: String, limiter: RateLimiter): String {
+    private suspend fun getJson(url: HttpUrl, label: String, limiter: RateLimiter, accept: String? = null): String {
         limiter.acquire()
-        val (code, body) = http.call(Request.Builder().url(url).build())
-        if (code == 429) throw IOException("$label is busy, try again in a moment")
-        if (code !in 200..299) throw IOException("$label error $code")
+        val req = Request.Builder().url(url).apply { if (accept != null) header("Accept", accept) }.build()
+        val (code, body) = http.call(req)
+        if (code == 429) throw IOException("$label is busy (429)")
+        if (code !in 200..299) throw IOException("$label HTTP $code")
         return body
     }
 
-    suspend fun searchMovies(q: String): List<MediaResult> = cached("m|${q.lowercase()}") { itunesMovies(q) }
+    /** Picks the first non-empty result; only fails when every source failed. */
+    private suspend fun firstNonEmpty(label: String, vararg sources: suspend () -> List<MediaResult>): List<MediaResult> {
+        var firstError: Throwable? = null
+        var failures = 0
+        for (src in sources) {
+            val r = runCatching { src() }
+            val v = r.getOrNull()
+            if (!v.isNullOrEmpty()) return v
+            if (r.isFailure) {
+                failures++
+                if (firstError == null) firstError = r.exceptionOrNull()
+            }
+        }
+        if (failures == sources.size) throw (firstError ?: IOException("$label unavailable"))
+        return emptyList()
+    }
+
+    suspend fun searchMovies(q: String): List<MediaResult> = cached("m|${q.lowercase()}") {
+        firstNonEmpty("Movies", { cinemetaSearch(q) }, { itunesMovies(q) })
+    }
 
     suspend fun searchShows(q: String): List<MediaResult> = cached("s|${q.lowercase()}") { tvmazeSearch(q) }
 
-    suspend fun searchAnime(q: String): List<MediaResult> =
-        cached("a|${q.lowercase()}") {
-            jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"))
-        }
+    suspend fun searchAnime(q: String): List<MediaResult> = cached("a|${q.lowercase()}") {
+        firstNonEmpty(
+            "Anime",
+            { jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true")) },
+            { kitsuSearch(q) }
+        )
+    }
 
-    /** Discover row: top movies on iTunes + shows airing today on TVMaze. */
+    /** Discover row: popular movies + shows airing today. */
     suspend fun trending(): List<MediaResult> = coroutineScope {
-        val m = async { runCatching { itunesTopMovies() }.getOrDefault(emptyList()) }
+        val m = async {
+            runCatching { cinemetaTop() }.getOrNull()?.takeIf { it.isNotEmpty() }
+                ?: runCatching { itunesTopMovies() }.getOrDefault(emptyList())
+        }
         val s = async { runCatching { tvmazeToday() }.getOrDefault(emptyList()) }
         m.await() + s.await()
     }
 
-    suspend fun topAnime(): List<MediaResult> =
-        jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true"))
+    suspend fun topAnime(): List<MediaResult> {
+        val a = runCatching { jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true")) }.getOrNull()
+        if (!a.isNullOrEmpty()) return a
+        return runCatching { kitsuTop() }.getOrDefault(emptyList())
+    }
 
     /** "Did you mean ...?" from Wikipedia's spelling correction. */
     suspend fun suggest(q: String): String? {
@@ -490,11 +556,25 @@ class MetadataApi(private val http: Http) {
             .build()
         wikiLimit.acquire()
         val (code, body) = http.call(
-            Request.Builder().url(url).header("User-Agent", "Saucyfy/1.0 (Android app; spelling suggestions)").build()
+            Request.Builder().url(url).header("User-Agent", "Elog/1.0 (Android app; spelling suggestions)").build()
         )
         if (code !in 200..299) return null
         val info = (JSON.parseToJsonElement(body).jsonObject["query"] as? JsonObject)?.get("searchinfo") as? JsonObject
         return info?.str("suggestion")?.takeIf { it.isNotBlank() && !it.equals(q, ignoreCase = true) }
+    }
+
+    /** Reaction GIF urls (nekos.best, no key). */
+    suspend fun gifs(category: String): List<String> {
+        gifCache[category]?.let { return it }
+        val url = HttpUrl.Builder().scheme("https").host("nekos.best")
+            .addPathSegments("api/v2/$category")
+            .addQueryParameter("amount", "12")
+            .build()
+        val arr = JSON.parseToJsonElement(getJson(url, "GIFs", gifLimit)).jsonObject["results"] as? JsonArray
+            ?: return emptyList()
+        val out = arr.mapNotNull { (it as? JsonObject)?.str("url") }.filter { it.startsWith("https://nekos.best/") }
+        if (out.isNotEmpty()) gifCache[category] = out
+        return out
     }
 
     // ---- real season / episode limits ----
@@ -513,15 +593,56 @@ class MetadataApi(private val http: Http) {
     }
 
     /** Total episodes of an anime (null while it is still airing / unknown). */
-    suspend fun animeEpisodes(malId: String): Int? {
+    suspend fun animeEpisodes(id: String): Int? {
+        if (id.startsWith("k")) {
+            val url = HttpUrl.Builder().scheme("https").host("kitsu.io")
+                .addPathSegments("api/edge/anime/${id.drop(1)}")
+                .build()
+            val data = JSON.parseToJsonElement(getJson(url, "Anime", kitsuLimit, kitsuAccept)).jsonObject["data"] as? JsonObject
+            return (data?.get("attributes") as? JsonObject)?.str("episodeCount")?.toIntOrNull()
+        }
         val url = HttpUrl.Builder().scheme("https").host("api.jikan.moe")
-            .addPathSegments("v4/anime/$malId")
+            .addPathSegments("v4/anime/$id")
             .build()
         val data = JSON.parseToJsonElement(getJson(url, "Anime", jikanLimit)).jsonObject["data"] as? JsonObject
         return data?.str("episodes")?.toIntOrNull()
     }
 
-    // ---- iTunes (movies) ----
+    // ---- Cinemeta (movies, IMDb ids) ----
+    private fun cinemetaMetas(body: String): List<MediaResult> {
+        val arr = JSON.parseToJsonElement(body).jsonObject["metas"] as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o.str("imdb_id") ?: o.str("id") ?: return@mapNotNull null
+            val title = o.str("name") ?: return@mapNotNull null
+            MediaResult(
+                externalId = id,
+                type = MediaType.MOVIE,
+                title = title,
+                year = (o.str("releaseInfo") ?: o.str("year") ?: "").take(4),
+                posterUrl = o.str("poster"),
+                overview = o.str("description") ?: "",
+                score = o.str("imdbRating")?.toDoubleOrNull()
+            )
+        }
+    }
+
+    private suspend fun cinemetaSearch(q: String): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("v3-cinemeta.strem.io")
+            .addPathSegments("catalog/movie/top")
+            .addPathSegment("search=$q.json")
+            .build()
+        return cinemetaMetas(getJson(url, "Movie search", cinemetaLimit)).take(24)
+    }
+
+    private suspend fun cinemetaTop(): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("v3-cinemeta.strem.io")
+            .addPathSegments("catalog/movie/top.json")
+            .build()
+        return cinemetaMetas(getJson(url, "Popular movies", cinemetaLimit)).take(20)
+    }
+
+    // ---- iTunes (movies fallback) ----
     private suspend fun itunesMovies(q: String): List<MediaResult> {
         val url = HttpUrl.Builder().scheme("https").host("itunes.apple.com").addPathSegment("search")
             .addQueryParameter("term", q)
@@ -626,7 +747,7 @@ class MetadataApi(private val http: Http) {
             jikanLimit.acquire()
             res = http.call(Request.Builder().url(url).build())
         }
-        if (res.first !in 200..299) throw IOException("Anime search failed (${res.first})")
+        if (res.first !in 200..299) throw IOException("Anime HTTP ${res.first}")
         val arr = JSON.parseToJsonElement(res.second).jsonObject["data"] as? JsonArray ?: return emptyList()
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
@@ -645,5 +766,46 @@ class MetadataApi(private val http: Http) {
                 episodes = o.str("episodes")?.toIntOrNull()
             )
         }
+    }
+
+    // ---- Kitsu (anime fallback, ids are prefixed with "k") ----
+    private fun kitsuItems(body: String): List<MediaResult> {
+        val arr = JSON.parseToJsonElement(body).jsonObject["data"] as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o.str("id") ?: return@mapNotNull null
+            val a = o["attributes"] as? JsonObject ?: return@mapNotNull null
+            val title = (a["titles"] as? JsonObject)?.str("en") ?: a.str("canonicalTitle") ?: return@mapNotNull null
+            val poster = a["posterImage"] as? JsonObject
+            MediaResult(
+                externalId = "k$id",
+                type = MediaType.ANIME,
+                title = title,
+                year = (a.str("startDate") ?: "").take(4),
+                posterUrl = poster?.str("medium") ?: poster?.str("small"),
+                overview = a.str("synopsis") ?: "",
+                score = a.str("averageRating")?.toDoubleOrNull()?.div(10),
+                episodes = a.str("episodeCount")?.toIntOrNull()
+            )
+        }
+    }
+
+    private suspend fun kitsuSearch(q: String): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("kitsu.io")
+            .addPathSegments("api/edge/anime")
+            .addQueryParameter("filter[text]", q)
+            .addQueryParameter("page[limit]", "20")
+            .build()
+        return kitsuItems(getJson(url, "Anime search", kitsuLimit, kitsuAccept))
+    }
+
+    private suspend fun kitsuTop(): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("kitsu.io")
+            .addPathSegments("api/edge/anime")
+            .addQueryParameter("filter[status]", "current")
+            .addQueryParameter("sort", "-userCount")
+            .addQueryParameter("page[limit]", "20")
+            .build()
+        return kitsuItems(getJson(url, "Top anime", kitsuLimit, kitsuAccept))
     }
 }
