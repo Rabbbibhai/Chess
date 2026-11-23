@@ -1,6 +1,7 @@
 package com.saucyfy.app
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -11,6 +12,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,7 +26,9 @@ import java.io.IOException
 
 data class UiState(
     val booting: Boolean = true,
+    val themeId: String = "midnight",
     val session: Session? = null,
+    val myUsername: String? = null,
     val authBusy: Boolean = false,
     val profileBusy: Boolean = false,
     val library: List<LibraryItem> = emptyList(),
@@ -33,15 +37,26 @@ data class UiState(
     val filter: MediaType? = null,
     val results: List<MediaResult> = emptyList(),
     val searching: Boolean = false,
+    val suggestion: String? = null,
+    val corrected: String? = null,
     val trending: List<MediaResult> = emptyList(),
     val topAnime: List<MediaResult> = emptyList(),
     val limits: Map<String, Limits> = emptyMap(),
+    val friends: List<FriendEntry> = emptyList(),
+    val friendsLoading: Boolean = false,
+    val userQuery: String = "",
+    val userResults: List<Profile> = emptyList(),
+    val userSearching: Boolean = false,
+    val viewingFriend: Profile? = null,
+    val friendItems: List<LibraryItem> = emptyList(),
+    val friendItemsLoading: Boolean = false,
     val message: String? = null
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = SessionStore(app)
     private val libCache = LibraryCache(app)
+    private val themePrefs = app.getSharedPreferences("saucyfy_theme", Context.MODE_PRIVATE)
     private val http = Http(app.cacheDir)
     private val api = SupabaseApi(http, store)
     private val meta = MetadataApi(http)
@@ -50,17 +65,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     private var searchJob: Job? = null
+    private var userJob: Job? = null
     private val attempts = ArrayDeque<Long>()
 
     init {
         val s = store.get()
         // Show the last-known library instantly, then refresh in the background.
         val cached: List<LibraryItem> = s?.let { libCache.get(it.userId) } ?: emptyList()
-        _ui.update { it.copy(session = s, booting = false, library = cached) }
-        if (s != null) {
-            refreshLibrary()
-            loadDiscover()
-        }
+        val theme = themePrefs.getString("id", "midnight") ?: "midnight"
+        _ui.update { it.copy(session = s, booting = false, library = cached, themeId = theme) }
+        if (s != null) onSignedIn()
+    }
+
+    private fun onSignedIn() {
+        refreshLibrary()
+        loadDiscover()
+        loadMe()
     }
 
     fun clearMessage() {
@@ -87,6 +107,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun persist() {
         val st = _ui.value
         st.session?.let { libCache.put(it.userId, st.library) }
+    }
+
+    // ---- theme ----
+    fun setTheme(id: String) {
+        themePrefs.edit().putString("id", id).apply()
+        _ui.update { it.copy(themeId = id) }
     }
 
     // ---- auth (with attempt lockout: 5 tries per minute) ----
@@ -120,8 +146,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     attempts.clear()
                     val cached: List<LibraryItem> = libCache.get(s.userId) ?: emptyList()
                     _ui.update { it.copy(session = s, library = cached) }
-                    refreshLibrary()
-                    loadDiscover()
+                    onSignedIn()
                 }
             } finally {
                 _ui.update { it.copy(authBusy = false) }
@@ -134,8 +159,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         launchSafe {
             val s = api.sessionFromRedirect(raw)
             _ui.update { it.copy(session = s) }
-            refreshLibrary()
-            loadDiscover()
+            onSignedIn()
         }
     }
 
@@ -143,19 +167,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.clear()
         libCache.clear()
         searchJob?.cancel()
-        _ui.update { UiState(booting = false) }
+        userJob?.cancel()
+        _ui.update { UiState(booting = false, themeId = it.themeId, trending = it.trending, topAnime = it.topAnime) }
     }
 
     // ---- profile ----
-    fun updateName(name: String) {
+    private fun loadMe() {
+        viewModelScope.launch {
+            val p = runCatching { api.myProfile() }.getOrNull()
+            if (p != null) _ui.update { it.copy(myUsername = p.username) }
+        }
+    }
+
+    fun editProfile(name: String, username: String) {
         val n = name.trim().take(30)
+        val u = username.trim().lowercase()
         if (n.length < 2) {
             toast("Name is too short"); return
         }
+        if (!Regex("^[a-z0-9_]{3,20}$").matches(u)) {
+            toast("Username: 3-20 letters, numbers or _"); return
+        }
         launchSafe {
+            api.patchProfile(displayName = n, username = u) // fails first if the username is taken
             val s = api.updateProfile(n, null)
-            _ui.update { it.copy(session = s) }
-            toast("Name updated")
+            _ui.update { it.copy(session = s, myUsername = u) }
+            toast("Profile updated")
         }
     }
 
@@ -167,6 +204,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val bytes = withContext(Dispatchers.IO) { compressAvatar(uri) }
                 val url = api.uploadAvatar(bytes)
                 val s = api.updateProfile(null, url)
+                runCatching { api.patchProfile(avatarUrl = url) }
                 _ui.update { it.copy(session = s) }
                 toast("Profile photo updated")
             } finally {
@@ -204,7 +242,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         launchSafe {
             _ui.update { it.copy(libLoading = true) }
             try {
-                val l = api.loadLibrary()
+                val uid = _ui.value.session?.userId ?: throw AuthExpired()
+                val l = api.loadLibrary(uid)
                 _ui.update { it.copy(library = l) }
                 persist()
             } finally {
@@ -215,8 +254,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadDiscover() {
         viewModelScope.launch {
-            val t: List<MediaResult> =
-                if (meta.hasTmdb) runCatching { meta.trending() }.getOrDefault(emptyList()) else emptyList()
+            val t: List<MediaResult> = runCatching { meta.trending() }.getOrDefault(emptyList())
             _ui.update { it.copy(trending = t) }
             val a: List<MediaResult> = runCatching { meta.topAnime() }.getOrDefault(emptyList())
             _ui.update { it.copy(topAnime = a) }
@@ -249,15 +287,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- search: parallel, results appear as each source answers, with spelling help ----
     fun onQuery(q: String) {
         _ui.update { it.copy(query = q) }
         searchJob?.cancel()
         if (q.isBlank()) {
-            _ui.update { it.copy(results = emptyList(), searching = false) }
+            _ui.update { it.copy(results = emptyList(), searching = false, suggestion = null, corrected = null) }
             return
         }
+        if (q.trim().length < 2) return
         searchJob = viewModelScope.launch {
-            delay(500)
+            delay(250)
             runSearch(q.trim(), _ui.value.filter)
         }
     }
@@ -267,21 +307,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         onQuery(_ui.value.query)
     }
 
+    private suspend fun searchAll(q: String, f: MediaType?, onPartial: (List<MediaResult>) -> Unit): List<MediaResult> =
+        coroutineScope {
+            val parts = arrayOfNulls<List<MediaResult>>(3)
+            fun emit() = onPartial(parts.filterNotNull().flatten())
+            val jobs = listOf(
+                async {
+                    if (f == null || f == MediaType.MOVIE) {
+                        parts[0] = runCatching { meta.searchMovies(q) }.getOrDefault(emptyList())
+                        emit()
+                    }
+                },
+                async {
+                    if (f == null || f == MediaType.TV) {
+                        parts[1] = runCatching { meta.searchShows(q) }.getOrDefault(emptyList())
+                        emit()
+                    }
+                },
+                async {
+                    if (f == null || f == MediaType.ANIME) {
+                        parts[2] = runCatching { meta.searchAnime(q) }.getOrDefault(emptyList())
+                        emit()
+                    }
+                }
+            )
+            jobs.awaitAll()
+            parts.filterNotNull().flatten()
+        }
+
+    private fun localTitles(): List<String> {
+        val st = _ui.value
+        return st.library.map { it.title } + st.trending.map { it.title } + st.topAnime.map { it.title }
+    }
+
     private suspend fun runSearch(q: String, f: MediaType?) {
-        _ui.update { it.copy(searching = true) }
+        _ui.update { it.copy(searching = true, suggestion = null, corrected = null) }
         try {
-            val out = coroutineScope {
-                val tm = async {
-                    if (f == MediaType.ANIME || !meta.hasTmdb) emptyList<MediaResult>()
-                    else runCatching { meta.searchTmdb(q, f) }.getOrDefault(emptyList())
+            val out = searchAll(q, f) { partial -> _ui.update { it.copy(results = partial) } }
+            if (out.isEmpty()) {
+                // Nothing found: try your own titles first (instant), then Wikipedia's spelling correction.
+                val alt = closestTitle(q, localTitles()) ?: runCatching { meta.suggest(q) }.getOrNull()
+                if (alt != null) {
+                    val fixed = searchAll(alt, f) { }
+                    if (fixed.isNotEmpty()) {
+                        _ui.update { it.copy(results = fixed, corrected = alt) }
+                    } else {
+                        _ui.update { it.copy(results = emptyList(), suggestion = alt) }
+                    }
+                } else {
+                    _ui.update { it.copy(results = emptyList()) }
                 }
-                val an = async {
-                    if (f == MediaType.MOVIE || f == MediaType.TV) emptyList<MediaResult>()
-                    else runCatching { meta.searchAnime(q) }.getOrDefault(emptyList())
-                }
-                tm.await() + an.await()
             }
-            _ui.update { it.copy(results = out) }
         } finally {
             _ui.update { it.copy(searching = false) }
         }
@@ -355,5 +431,95 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             onDone()
             toast("Removed from your library")
         }
+    }
+
+    // ---- friends ----
+    fun loadFriends() {
+        launchSafe {
+            _ui.update { it.copy(friendsLoading = true) }
+            try {
+                val f = api.loadFriends()
+                _ui.update { it.copy(friends = f) }
+            } finally {
+                _ui.update { it.copy(friendsLoading = false) }
+            }
+        }
+    }
+
+    fun searchUsers(q: String) {
+        _ui.update { it.copy(userQuery = q) }
+        userJob?.cancel()
+        if (q.trim().length < 2) {
+            _ui.update { it.copy(userResults = emptyList(), userSearching = false) }
+            return
+        }
+        userJob = viewModelScope.launch {
+            delay(300)
+            _ui.update { it.copy(userSearching = true) }
+            try {
+                val r = api.searchUsers(q.trim())
+                _ui.update { it.copy(userResults = r) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast(e.message ?: "Could not search people")
+            } finally {
+                _ui.update { it.copy(userSearching = false) }
+            }
+        }
+    }
+
+    fun addFriend(p: Profile) {
+        launchSafe {
+            val existing = _ui.value.friends.firstOrNull { it.profile.id == p.id }
+            if (existing != null && existing.incoming && !existing.accepted) {
+                api.acceptRequest(existing.friendshipId)
+                toast("You're now friends with ${p.shownName}")
+            } else if (existing == null) {
+                api.sendRequest(p.id)
+                toast("Friend request sent")
+            }
+            val f = api.loadFriends()
+            _ui.update { it.copy(friends = f) }
+        }
+    }
+
+    fun acceptFriend(e: FriendEntry) {
+        launchSafe {
+            api.acceptRequest(e.friendshipId)
+            val f = api.loadFriends()
+            _ui.update { it.copy(friends = f) }
+            toast("You're now friends with ${e.profile.shownName}")
+        }
+    }
+
+    /** Decline / cancel a request, or unfriend. */
+    fun removeFriend(e: FriendEntry) {
+        launchSafe {
+            api.removeFriendship(e.friendshipId)
+            val f = api.loadFriends()
+            _ui.update { st ->
+                st.copy(
+                    friends = f,
+                    viewingFriend = if (st.viewingFriend?.id == e.profile.id) null else st.viewingFriend
+                )
+            }
+        }
+    }
+
+    fun openFriend(p: Profile) {
+        _ui.update { it.copy(viewingFriend = p, friendItems = emptyList(), friendItemsLoading = true) }
+        launchSafe {
+            try {
+                val items = api.libraryOf(p.id)
+                _ui.update { if (it.viewingFriend?.id == p.id) it.copy(friendItems = items) else it }
+            } finally {
+                _ui.update { it.copy(friendItemsLoading = false) }
+            }
+        }
+    }
+
+    fun closeFriend() {
+        _ui.update { it.copy(viewingFriend = null, friendItems = emptyList()) }
     }
 }

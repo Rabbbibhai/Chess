@@ -8,8 +8,12 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saucyfy.app.ui.App
 import com.saucyfy.app.ui.SaucyfyTheme
+import com.saucyfy.app.ui.themeById
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
@@ -22,7 +26,18 @@ class MainActivity : ComponentActivity() {
         )
         if (savedInstanceState == null) handle(intent)
         setContent {
-            SaucyfyTheme {
+            val ui by vm.ui.collectAsStateWithLifecycle()
+            val dark = themeById(ui.themeId).dark
+            // Keep status / navigation bar icons readable in light and dark themes.
+            LaunchedEffect(dark) {
+                val style = if (dark) {
+                    SystemBarStyle.dark(Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+                }
+                this@MainActivity.enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            }
+            SaucyfyTheme(ui.themeId) {
                 App(vm = vm)
             }
         }

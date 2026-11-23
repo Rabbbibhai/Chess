@@ -1,7 +1,7 @@
 package com.saucyfy.app.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -32,7 +32,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -49,11 +48,12 @@ fun LoginScreen(busy: Boolean, onSubmit: (email: String, password: String, signU
     var password by remember { mutableStateOf("") }
     var signUp by rememberSaveable { mutableStateOf(false) }
     val configured = Cfg.configured
+    val scheme = MaterialTheme.colorScheme
 
     Box(
         Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF0E2A55), Brand.Bg, Brand.Bg)))
+            .background(Brush.verticalGradient(listOf(scheme.primaryContainer, scheme.background, scheme.background)))
     ) {
         Column(
             Modifier
@@ -78,7 +78,7 @@ fun LoginScreen(busy: Boolean, onSubmit: (email: String, password: String, signU
             Text(
                 "Your movies, shows and anime - rated, tracked, and always right where you left off.",
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = scheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(32.dp))
@@ -113,7 +113,7 @@ fun LoginScreen(busy: Boolean, onSubmit: (email: String, password: String, signU
                     .height(54.dp)
             ) {
                 if (busy) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = scheme.onPrimary)
                 } else {
                     Text(if (signUp) "Create account" else "Sign in", fontWeight = FontWeight.SemiBold)
                 }
@@ -125,7 +125,7 @@ fun LoginScreen(busy: Boolean, onSubmit: (email: String, password: String, signU
                 Text(
                     "This build has no Supabase settings.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = scheme.error,
                     textAlign = TextAlign.Center
                 )
             }

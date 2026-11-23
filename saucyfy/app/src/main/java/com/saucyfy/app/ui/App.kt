@@ -1,5 +1,6 @@
 package com.saucyfy.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
@@ -73,6 +75,12 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
         if (uri != null) vm.setAvatar(uri)
     }
 
+    LaunchedEffect(tab) {
+        if (tab == 2) vm.loadFriends()
+    }
+    // Back from a friend's list returns to the Friends list.
+    BackHandler(enabled = tab == 2 && ui.viewingFriend != null) { vm.closeFriend() }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -80,6 +88,7 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                 val tabs = listOf(
                     "Library" to Icons.Filled.Home,
                     "Discover" to Icons.Filled.Search,
+                    "Friends" to Icons.Filled.Favorite,
                     "Profile" to Icons.Filled.Person
                 )
                 tabs.forEachIndexed { i, (label, icon) ->
@@ -111,13 +120,41 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                     onOpen = { detail = it },
                     modifier = m
                 )
+                2 -> {
+                    val vf = ui.viewingFriend
+                    if (vf != null) {
+                        FriendLibraryScreen(
+                            friend = vf,
+                            items = ui.friendItems,
+                            loading = ui.friendItemsLoading,
+                            onBack = { vm.closeFriend() },
+                            onOpen = { detail = it },
+                            onUnfriend = {
+                                ui.friends.firstOrNull { it.profile.id == vf.id }?.let { vm.removeFriend(it) }
+                            },
+                            modifier = m
+                        )
+                    } else {
+                        FriendsScreen(
+                            ui = ui,
+                            onSearch = { vm.searchUsers(it) },
+                            onAdd = { vm.addFriend(it) },
+                            onAccept = { vm.acceptFriend(it) },
+                            onRemove = { vm.removeFriend(it) },
+                            onOpen = { vm.openFriend(it) },
+                            onRefresh = { vm.loadFriends() },
+                            modifier = m
+                        )
+                    }
+                }
                 else -> ProfileScreen(
                     ui = ui,
                     onSignOut = { vm.signOut() },
                     onPickAvatar = {
                         picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
-                    onRename = { vm.updateName(it) },
+                    onEditProfile = { n, u -> vm.editProfile(n, u) },
+                    onTheme = { vm.setTheme(it) },
                     modifier = m
                 )
             }

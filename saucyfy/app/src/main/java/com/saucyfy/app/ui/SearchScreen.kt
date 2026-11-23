@@ -25,10 +25,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -58,6 +60,8 @@ fun SearchScreen(
     modifier: Modifier = Modifier
 ) {
     val focus = LocalFocusManager.current
+    val sugg = ui.suggestion
+    val corrected = ui.corrected
     val filters = listOf<Pair<String, MediaType?>>(
         "All" to null,
         "Movies" to MediaType.MOVIE,
@@ -100,16 +104,34 @@ fun SearchScreen(
                 FilterChip(selected = ui.filter == t, onClick = { onFilter(t) }, label = { Text(label) })
             }
         }
+        if (ui.searching && ui.query.isNotBlank()) {
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+        }
 
         when {
             ui.query.isBlank() -> Discover(ui, onOpen)
-            ui.searching && ui.results.isEmpty() ->
+            ui.results.isEmpty() && ui.searching ->
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            ui.results.isEmpty() -> EmptyState("No matches", "Try a different spelling or another filter.")
+            ui.results.isEmpty() && sugg != null -> EmptyState(
+                title = "No results for “${ui.query.trim()}”",
+                body = "Did you mean “$sugg”?",
+                action = { Button(onClick = { onQuery(sugg) }) { Text("Search “$sugg”") } }
+            )
+            ui.results.isEmpty() -> EmptyState("No matches", "Check the spelling or try another filter.")
             else -> LazyColumn(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (corrected != null) {
+                    item {
+                        Text(
+                            "No results for “${ui.query.trim()}” - showing results for “$corrected”",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                }
                 items(ui.results) { r ->
                     val inLib = ui.library.firstOrNull { it.mediaType == r.type.key && it.externalId == r.externalId }
                     ResultRow(r, inLib, onClick = { onOpen(r.toDetail()) })

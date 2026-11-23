@@ -120,6 +120,9 @@ private fun errMsg(code: Int, body: String): String {
     val o = runCatching { JSON.parseToJsonElement(body).jsonObject }.getOrNull()
     val raw = o?.str("msg") ?: o?.str("error_description") ?: o?.str("message") ?: ""
     return when {
+        raw.contains("profiles_username", ignoreCase = true) -> "That username is already taken"
+        raw.contains("friendships", ignoreCase = true) && raw.contains("duplicate", ignoreCase = true) ->
+            "You already have a request with this person"
         raw.contains("rate limit", ignoreCase = true) -> "Rate limit reached. Please try again later."
         raw.isNotBlank() -> raw.replaceFirstChar { it.uppercase() }
         code == 429 -> "Too many requests. Please wait a bit and try again."
@@ -130,12 +133,18 @@ private fun errMsg(code: Int, body: String): String {
 class SupabaseApi(private val http: Http, private val store: SessionStore) {
     private val base = Cfg.supabaseUrl
     private val writeLimiter = RateLimiter(350)
+    private val profileCols = "id,username,display_name,avatar_url"
 
     private fun jsonPost(url: String, json: String): Request =
         Request.Builder().url(url)
             .header("apikey", Cfg.anonKey)
             .post(json.toRequestBody(JSON_MT))
             .build()
+
+    private fun rest(path: String, token: String): Request.Builder =
+        Request.Builder().url("$base/rest/v1/$path")
+            .header("apikey", Cfg.anonKey)
+            .header("Authorization", "Bearer $token")
 
     private fun credentials(email: String, password: String): String =
         buildJsonObject {
@@ -250,6 +259,8 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
         return r
     }
 
+    private fun myId(): String = (store.get() ?: throw AuthExpired()).userId
+
     // ---- profile ----
     suspend fun updateProfile(name: String?, avatarUrl: String?): Session {
         val data = buildJsonObject {
@@ -275,9 +286,33 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
         return ns
     }
 
+    /** Keeps the public profile row (what friends see) in sync. */
+    suspend fun patchProfile(displayName: String? = null, username: String? = null, avatarUrl: String? = null) {
+        val me = myId()
+        val payload = buildJsonObject {
+            displayName?.let { put("display_name", it) }
+            username?.let { put("username", it) }
+            avatarUrl?.let { put("avatar_url", it) }
+        }.toString()
+        val (code, body) = authed { t ->
+            rest("profiles?id=eq.$me", t)
+                .header("Prefer", "return=minimal")
+                .patch(payload.toRequestBody(JSON_MT))
+                .build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+    }
+
+    suspend fun myProfile(): Profile? {
+        val me = myId()
+        val (code, body) = authed { t -> rest("profiles?select=$profileCols&id=eq.$me", t).build() }
+        if (code !in 200..299) return null
+        return JSON.decodeFromString(ListSerializer(Profile.serializer()), body).firstOrNull()
+    }
+
     /** Uploads a JPEG (already compressed to < 1 MB) and returns its public URL. */
     suspend fun uploadAvatar(bytes: ByteArray): String {
-        val uid = (store.get() ?: throw AuthExpired()).userId
+        val uid = myId()
         val (code, body) = authed { t ->
             Request.Builder().url("$base/storage/v1/object/avatars/$uid/avatar.jpg")
                 .header("apikey", Cfg.anonKey)
@@ -291,26 +326,22 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
     }
 
     // ---- library ----
-    suspend fun loadLibrary(): List<LibraryItem> {
+    suspend fun loadLibrary(userId: String): List<LibraryItem> {
         val (code, body) = authed { t ->
-            Request.Builder()
-                .url("$base/rest/v1/library_items?select=*&order=updated_at.desc")
-                .header("apikey", Cfg.anonKey)
-                .header("Authorization", "Bearer $t")
-                .build()
+            rest("library_items?select=*&user_id=eq.$userId&order=updated_at.desc", t).build()
         }
         if (code !in 200..299) throw IOException(errMsg(code, body))
         return JSON.decodeFromString(ListSerializer(LibraryItem.serializer()), body)
     }
 
+    /** A friend's library (allowed by row level security only for accepted friends). */
+    suspend fun libraryOf(userId: String): List<LibraryItem> = loadLibrary(userId)
+
     suspend fun upsert(item: LibraryUpsert): LibraryItem {
         writeLimiter.acquire()
         val json = JSON.encodeToString(LibraryUpsert.serializer(), item)
         val (code, body) = authed { t ->
-            Request.Builder()
-                .url("$base/rest/v1/library_items?on_conflict=user_id,media_type,external_id")
-                .header("apikey", Cfg.anonKey)
-                .header("Authorization", "Bearer $t")
+            rest("library_items?on_conflict=user_id,media_type,external_id", t)
                 .header("Prefer", "resolution=merge-duplicates,return=representation")
                 .post(json.toRequestBody(JSON_MT))
                 .build()
@@ -321,14 +352,72 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
 
     suspend fun delete(id: String) {
         writeLimiter.acquire()
+        val (code, body) = authed { t -> rest("library_items?id=eq.$id", t).delete().build() }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+    }
+
+    // ---- friends ----
+    private suspend fun profilesByIds(ids: List<String>): List<Profile> {
+        if (ids.isEmpty()) return emptyList()
         val (code, body) = authed { t ->
-            Request.Builder()
-                .url("$base/rest/v1/library_items?id=eq.$id")
-                .header("apikey", Cfg.anonKey)
-                .header("Authorization", "Bearer $t")
-                .delete()
+            rest("profiles?select=$profileCols&id=in.(${ids.joinToString(",")})", t).build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        return JSON.decodeFromString(ListSerializer(Profile.serializer()), body)
+    }
+
+    suspend fun loadFriends(): List<FriendEntry> {
+        val me = myId()
+        val (code, body) = authed { t -> rest("friendships?select=*&order=created_at.desc", t).build() }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        val rows = JSON.decodeFromString(ListSerializer(Friendship.serializer()), body)
+        if (rows.isEmpty()) return emptyList()
+        val otherId = { f: Friendship -> if (f.requester == me) f.addressee else f.requester }
+        val profiles = profilesByIds(rows.map(otherId).distinct()).associateBy { it.id }
+        return rows.mapNotNull { f ->
+            val p = profiles[otherId(f)] ?: return@mapNotNull null
+            FriendEntry(f.id, p, f.status == "accepted", incoming = f.addressee == me)
+        }
+    }
+
+    suspend fun searchUsers(q: String): List<Profile> {
+        val me = myId()
+        val s = q.lowercase().filter { it.isLetterOrDigit() || it == '_' }
+        if (s.length < 2) return emptyList()
+        val (code, body) = authed { t ->
+            rest(
+                "profiles?select=$profileCols&or=(username.ilike.$s*,display_name.ilike.*$s*)&id=neq.$me&limit=20",
+                t
+            ).build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        return JSON.decodeFromString(ListSerializer(Profile.serializer()), body)
+    }
+
+    suspend fun sendRequest(toId: String) {
+        val payload = buildJsonObject { put("addressee", toId) }.toString()
+        val (code, body) = authed { t ->
+            rest("friendships", t)
+                .header("Prefer", "return=minimal")
+                .post(payload.toRequestBody(JSON_MT))
                 .build()
         }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+    }
+
+    suspend fun acceptRequest(friendshipId: String) {
+        val payload = buildJsonObject { put("status", "accepted") }.toString()
+        val (code, body) = authed { t ->
+            rest("friendships?id=eq.$friendshipId", t)
+                .header("Prefer", "return=minimal")
+                .patch(payload.toRequestBody(JSON_MT))
+                .build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+    }
+
+    suspend fun removeFriendship(friendshipId: String) {
+        val (code, body) = authed { t -> rest("friendships?id=eq.$friendshipId", t).delete().build() }
         if (code !in 200..299) throw IOException(errMsg(code, body))
     }
 }
@@ -338,24 +427,23 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
  *  - Movies: Apple iTunes Search / RSS
  *  - Shows:  TVMaze
  *  - Anime:  Jikan (MyAnimeList)
- * Method names `hasTmdb` / `searchTmdb` are kept so the view model stays unchanged.
+ *  - Spelling suggestions: Wikipedia search
  */
 class MetadataApi(private val http: Http) {
-    val hasTmdb: Boolean get() = true
-
     private val sizeRegex = Regex("\\d+x\\d+bb")
     private val tagRegex = Regex("<[^>]*>")
 
-    private val itunesLimit = RateLimiter(1500)
-    private val tvmazeLimit = RateLimiter(500)
+    private val itunesLimit = RateLimiter(1200)
+    private val tvmazeLimit = RateLimiter(400)
     private val jikanLimit = RateLimiter(450)
+    private val wikiLimit = RateLimiter(400)
     private val cache = ConcurrentHashMap<String, List<MediaResult>>()
 
     private suspend fun cached(key: String, load: suspend () -> List<MediaResult>): List<MediaResult> {
         cache[key]?.let { return it }
         val v = load()
         if (v.isNotEmpty()) {
-            if (cache.size > 60) cache.clear()
+            if (cache.size > 80) cache.clear()
             cache[key] = v
         }
         return v
@@ -369,20 +457,13 @@ class MetadataApi(private val http: Http) {
         return body
     }
 
-    /** Movies + shows search. */
-    suspend fun searchTmdb(q: String, only: MediaType?): List<MediaResult> =
-        cached("t|$only|${q.lowercase()}") {
-            coroutineScope {
-                val movies = async {
-                    if (only == MediaType.TV) emptyList<MediaResult>()
-                    else runCatching { itunesMovies(q) }.getOrDefault(emptyList())
-                }
-                val shows = async {
-                    if (only == MediaType.MOVIE) emptyList<MediaResult>()
-                    else runCatching { tvmazeSearch(q) }.getOrDefault(emptyList())
-                }
-                movies.await() + shows.await()
-            }
+    suspend fun searchMovies(q: String): List<MediaResult> = cached("m|${q.lowercase()}") { itunesMovies(q) }
+
+    suspend fun searchShows(q: String): List<MediaResult> = cached("s|${q.lowercase()}") { tvmazeSearch(q) }
+
+    suspend fun searchAnime(q: String): List<MediaResult> =
+        cached("a|${q.lowercase()}") {
+            jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"))
         }
 
     /** Discover row: top movies on iTunes + shows airing today on TVMaze. */
@@ -392,13 +473,29 @@ class MetadataApi(private val http: Http) {
         m.await() + s.await()
     }
 
-    suspend fun searchAnime(q: String): List<MediaResult> =
-        cached("a|${q.lowercase()}") {
-            jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"))
-        }
-
     suspend fun topAnime(): List<MediaResult> =
         jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true"))
+
+    /** "Did you mean ...?" from Wikipedia's spelling correction. */
+    suspend fun suggest(q: String): String? {
+        val url = HttpUrl.Builder().scheme("https").host("en.wikipedia.org")
+            .addPathSegments("w/api.php")
+            .addQueryParameter("action", "query")
+            .addQueryParameter("list", "search")
+            .addQueryParameter("srsearch", q)
+            .addQueryParameter("srlimit", "1")
+            .addQueryParameter("srinfo", "suggestion")
+            .addQueryParameter("srprop", "")
+            .addQueryParameter("format", "json")
+            .build()
+        wikiLimit.acquire()
+        val (code, body) = http.call(
+            Request.Builder().url(url).header("User-Agent", "Saucyfy/1.0 (Android app; spelling suggestions)").build()
+        )
+        if (code !in 200..299) return null
+        val info = (JSON.parseToJsonElement(body).jsonObject["query"] as? JsonObject)?.get("searchinfo") as? JsonObject
+        return info?.str("suggestion")?.takeIf { it.isNotBlank() && !it.equals(q, ignoreCase = true) }
+    }
 
     // ---- real season / episode limits ----
     /** season number -> number of episodes, from TVMaze. */

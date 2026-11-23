@@ -1,7 +1,9 @@
 package com.saucyfy.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -54,7 +57,8 @@ fun ProfileScreen(
     ui: UiState,
     onSignOut: () -> Unit,
     onPickAvatar: () -> Unit,
-    onRename: (String) -> Unit,
+    onEditProfile: (name: String, username: String) -> Unit,
+    onTheme: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val session = ui.session
@@ -63,28 +67,39 @@ fun ProfileScreen(
     val avg = if (rated.isEmpty()) "-" else "%.1f".format(rated.average())
     val name = session?.name?.ifBlank { null } ?: "Saucy watcher"
 
-    var renaming by remember { mutableStateOf(false) }
-    var draft by remember { mutableStateOf("") }
+    var editing by remember { mutableStateOf(false) }
+    var nameDraft by remember { mutableStateOf("") }
+    var userDraft by remember { mutableStateOf("") }
 
-    if (renaming) {
+    if (editing) {
         AlertDialog(
-            onDismissRequest = { renaming = false },
-            title = { Text("Change name") },
+            onDismissRequest = { editing = false },
+            title = { Text("Edit profile") },
             text = {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it.take(30) },
-                    singleLine = true,
-                    label = { Text("Display name") }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = nameDraft,
+                        onValueChange = { nameDraft = it.take(30) },
+                        singleLine = true,
+                        label = { Text("Display name") }
+                    )
+                    OutlinedTextField(
+                        value = userDraft,
+                        onValueChange = { userDraft = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' }.take(20) },
+                        singleLine = true,
+                        label = { Text("Username") },
+                        prefix = { Text("@") },
+                        supportingText = { Text("3-20 letters, numbers or _. Friends find you by this.") }
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    onRename(draft)
-                    renaming = false
+                    onEditProfile(nameDraft, userDraft)
+                    editing = false
                 }) { Text("Save") }
             },
-            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } }
         )
     }
 
@@ -134,13 +149,21 @@ fun ProfileScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 IconButton(onClick = {
-                    draft = name
-                    renaming = true
-                }) { Icon(Icons.Filled.Edit, "Change name", Modifier.size(18.dp)) }
+                    nameDraft = name
+                    userDraft = ui.myUsername ?: ""
+                    editing = true
+                }) { Icon(Icons.Filled.Edit, "Edit profile", Modifier.size(18.dp)) }
+            }
+            ui.myUsername?.let {
+                Text(
+                    "@$it",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
             Text(
                 session?.email ?: "",
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -163,6 +186,47 @@ fun ProfileScreen(
                 MediaStat("Movies", lib.count { it.type == MediaType.MOVIE })
                 MediaStat("Shows", lib.count { it.type == MediaType.TV })
                 MediaStat("Anime", lib.count { it.type == MediaType.ANIME })
+            }
+        }
+
+        // ---- theme picker ----
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Theme", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Themes.all.forEach { t ->
+                        val selected = t.id == ui.themeId
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.clickable { onTheme(t.id) }
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(52.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(listOf(t.scheme.background, t.scheme.primary)))
+                                    .border(
+                                        if (selected) 3.dp else 1.dp,
+                                        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                        CircleShape
+                                    )
+                            )
+                            Text(
+                                t.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
             }
         }
 
