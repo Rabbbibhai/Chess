@@ -113,7 +113,12 @@ fun LibraryScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(shown, key = { it.id ?: (it.mediaType + it.externalId) }) { item ->
-                    LibraryCard(item, onClick = { onOpen(item.toDetail()) }, onBump = { onBump(item) })
+                    LibraryCard(
+                        item,
+                        onClick = { onOpen(item.toDetail()) },
+                        onBump = { onBump(item) },
+                        modifier = Modifier.animateItem()
+                    )
                 }
             }
         }
@@ -121,13 +126,13 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun LibraryCard(item: LibraryItem, onClick: () -> Unit, onBump: () -> Unit) {
+private fun LibraryCard(item: LibraryItem, onClick: () -> Unit, onBump: () -> Unit, modifier: Modifier = Modifier) {
     val s = item.statusEnum
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth()
     ) {
         Row(Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Poster(item.posterUrl, Modifier.width(66.dp).height(98.dp))

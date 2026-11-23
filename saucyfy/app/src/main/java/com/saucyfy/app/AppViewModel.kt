@@ -1,10 +1,14 @@
 package com.saucyfy.app
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.saucyfy.app.data.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -14,11 +18,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 data class UiState(
     val booting: Boolean = true,
     val session: Session? = null,
     val authBusy: Boolean = false,
+    val profileBusy: Boolean = false,
     val library: List<LibraryItem> = emptyList(),
     val libLoading: Boolean = false,
     val query: String = "",
@@ -27,12 +35,14 @@ data class UiState(
     val searching: Boolean = false,
     val trending: List<MediaResult> = emptyList(),
     val topAnime: List<MediaResult> = emptyList(),
+    val limits: Map<String, Limits> = emptyMap(),
     val message: String? = null
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = SessionStore(app)
-    private val http = Http()
+    private val libCache = LibraryCache(app)
+    private val http = Http(app.cacheDir)
     private val api = SupabaseApi(http, store)
     private val meta = MetadataApi(http)
 
@@ -44,7 +54,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         val s = store.get()
-        _ui.update { it.copy(session = s, booting = false) }
+        // Show the last-known library instantly, then refresh in the background.
+        val cached: List<LibraryItem> = s?.let { libCache.get(it.userId) } ?: emptyList()
+        _ui.update { it.copy(session = s, booting = false, library = cached) }
         if (s != null) {
             refreshLibrary()
             loadDiscover()
@@ -70,6 +82,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             toast(e.message ?: "Something went wrong")
         }
+    }
+
+    private fun persist() {
+        val st = _ui.value
+        st.session?.let { libCache.put(it.userId, st.library) }
     }
 
     // ---- auth (with attempt lockout: 5 tries per minute) ----
@@ -101,7 +118,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     toast("Account created. Check your email to confirm it, then sign in.")
                 } else {
                     attempts.clear()
-                    _ui.update { it.copy(session = s) }
+                    val cached: List<LibraryItem> = libCache.get(s.userId) ?: emptyList()
+                    _ui.update { it.copy(session = s, library = cached) }
                     refreshLibrary()
                     loadDiscover()
                 }
@@ -123,16 +141,72 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         store.clear()
+        libCache.clear()
         searchJob?.cancel()
         _ui.update { UiState(booting = false) }
     }
 
+    // ---- profile ----
+    fun updateName(name: String) {
+        val n = name.trim().take(30)
+        if (n.length < 2) {
+            toast("Name is too short"); return
+        }
+        launchSafe {
+            val s = api.updateProfile(n, null)
+            _ui.update { it.copy(session = s) }
+            toast("Name updated")
+        }
+    }
+
+    fun setAvatar(uri: Uri) {
+        if (_ui.value.profileBusy) return
+        _ui.update { it.copy(profileBusy = true) }
+        launchSafe {
+            try {
+                val bytes = withContext(Dispatchers.IO) { compressAvatar(uri) }
+                val url = api.uploadAvatar(bytes)
+                val s = api.updateProfile(null, url)
+                _ui.update { it.copy(session = s) }
+                toast("Profile photo updated")
+            } finally {
+                _ui.update { it.copy(profileBusy = false) }
+            }
+        }
+    }
+
+    /** Center-crops to a square, shrinks to <= 512 px and re-encodes as JPEG so it is always under 1 MB. */
+    private fun compressAvatar(uri: Uri): ByteArray {
+        val cr = getApplication<Application>().contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: throw IOException("Could not read that image")
+        val side = minOf(bmp.width, bmp.height)
+        val square = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
+        val scaled = if (side > 512) Bitmap.createScaledBitmap(square, 512, 512, true) else square
+        val out = ByteArrayOutputStream()
+        var q = 88
+        do {
+            out.reset()
+            scaled.compress(Bitmap.CompressFormat.JPEG, q, out)
+            q -= 10
+        } while (out.size() > 1_000_000 && q > 20)
+        if (out.size() > 1_000_000) throw IOException("Image is too large (max 1 MB)")
+        return out.toByteArray()
+    }
+
+    // ---- library ----
     fun refreshLibrary() {
         launchSafe {
             _ui.update { it.copy(libLoading = true) }
             try {
                 val l = api.loadLibrary()
                 _ui.update { it.copy(library = l) }
+                persist()
             } finally {
                 _ui.update { it.copy(libLoading = false) }
             }
@@ -146,6 +220,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(trending = t) }
             val a: List<MediaResult> = runCatching { meta.topAnime() }.getOrDefault(emptyList())
             _ui.update { it.copy(topAnime = a) }
+        }
+    }
+
+    /** Fetches real season/episode counts so the counters can't be tapped past what exists. */
+    fun loadLimits(d: Detail) {
+        if (d.type == MediaType.MOVIE) return
+        val key = d.type.key + ":" + d.externalId
+        if (_ui.value.limits.containsKey(key)) return
+        viewModelScope.launch {
+            val lim: Limits = runCatching {
+                if (d.type == MediaType.TV) {
+                    Limits(seasons = meta.tvmazeSeasons(d.externalId).ifEmpty { null })
+                } else {
+                    Limits(totalEpisodes = d.episodes ?: meta.animeEpisodes(d.externalId))
+                }
+            }.getOrNull() ?: return@launch
+            _ui.update { it.copy(limits = it.limits + (key to lim)) }
+        }
+    }
+
+    private fun maxEpisodeFor(item: LibraryItem): Int {
+        val lim = _ui.value.limits[item.mediaType + ":" + item.externalId]
+        return when (item.type) {
+            MediaType.TV -> lim?.seasons?.get(item.season ?: 1) ?: 100
+            MediaType.ANIME -> lim?.totalEpisodes ?: 3000
+            MediaType.MOVIE -> 0
         }
     }
 
@@ -192,6 +292,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val rest = st.library.filterNot { it.mediaType == saved.mediaType && it.externalId == saved.externalId }
             st.copy(library = listOf(saved) + rest)
         }
+        persist()
     }
 
     fun save(
@@ -227,11 +328,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** +1 episode: the list updates instantly, then syncs (and rolls back if it fails). */
     fun bumpEpisode(item: LibraryItem) {
+        val next = (item.episode ?: 0) + 1
+        if (next > maxEpisodeFor(item)) {
+            toast("That's the last episode"); return
+        }
+        replaceLocal(item.copy(episode = next))
         launchSafe {
-            val uid = _ui.value.session?.userId ?: throw AuthExpired()
-            val saved = api.upsert(item.toUpsert(uid, episode = (item.episode ?: 0) + 1))
-            replaceLocal(saved)
+            try {
+                val uid = _ui.value.session?.userId ?: throw AuthExpired()
+                replaceLocal(api.upsert(item.toUpsert(uid, episode = next)))
+            } catch (e: Exception) {
+                replaceLocal(item)
+                throw e
+            }
         }
     }
 
@@ -240,6 +351,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val id = item.id ?: return@launchSafe
             api.delete(id)
             _ui.update { st -> st.copy(library = st.library.filterNot { it.id == id }) }
+            persist()
             onDone()
             toast("Removed from your library")
         }

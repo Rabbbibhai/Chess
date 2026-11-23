@@ -15,11 +15,13 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import okhttp3.Cache
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.io.IOException
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -48,10 +50,28 @@ class RateLimiter(private val minIntervalMs: Long) {
     }
 }
 
-class Http {
+/** HTTP client with a 20 MB disk cache; public metadata GETs are cached for 15 minutes. */
+class Http(cacheDir: File? = null) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
+        .apply {
+            if (cacheDir != null) {
+                cache(Cache(File(cacheDir, "http"), 20L * 1024 * 1024))
+                addNetworkInterceptor { chain ->
+                    val req = chain.request()
+                    val res = chain.proceed(req)
+                    if (req.method == "GET" && !req.url.host.endsWith("supabase.co")) {
+                        res.newBuilder()
+                            .removeHeader("Pragma")
+                            .header("Cache-Control", "public, max-age=900")
+                            .build()
+                    } else {
+                        res
+                    }
+                }
+            }
+        }
         .build()
 
     suspend fun call(req: Request): Pair<Int, String> = withContext(Dispatchers.IO) {
@@ -75,6 +95,24 @@ class SessionStore(ctx: Context) {
     }
 }
 
+/** Keeps the last-seen library on disk so the app opens instantly, then refreshes in the background. */
+class LibraryCache(ctx: Context) {
+    private val prefs = ctx.getSharedPreferences("saucyfy_cache", Context.MODE_PRIVATE)
+    private val ser = ListSerializer(LibraryItem.serializer())
+
+    fun get(userId: String): List<LibraryItem>? = prefs.getString("lib_$userId", null)?.let {
+        runCatching { JSON.decodeFromString(ser, it) }.getOrNull()
+    }
+
+    fun put(userId: String, items: List<LibraryItem>) {
+        prefs.edit().putString("lib_$userId", JSON.encodeToString(ser, items)).apply()
+    }
+
+    fun clear() {
+        prefs.edit().clear().apply()
+    }
+}
+
 private val JSON_MT = "application/json".toMediaType()
 private fun nowSec() = System.currentTimeMillis() / 1000
 
@@ -82,9 +120,9 @@ private fun errMsg(code: Int, body: String): String {
     val o = runCatching { JSON.parseToJsonElement(body).jsonObject }.getOrNull()
     val raw = o?.str("msg") ?: o?.str("error_description") ?: o?.str("message") ?: ""
     return when {
-        code == 429 -> "Too many requests. Please wait a bit and try again."
-        raw.contains("rate limit", ignoreCase = true) -> "Email rate limit reached. Try again later."
+        raw.contains("rate limit", ignoreCase = true) -> "Rate limit reached. Please try again later."
         raw.isNotBlank() -> raw.replaceFirstChar { it.uppercase() }
+        code == 429 -> "Too many requests. Please wait a bit and try again."
         else -> "Request failed ($code)"
     }
 }
@@ -212,6 +250,47 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
         return r
     }
 
+    // ---- profile ----
+    suspend fun updateProfile(name: String?, avatarUrl: String?): Session {
+        val data = buildJsonObject {
+            name?.let { put("full_name", it) }
+            avatarUrl?.let { put("avatar_url", it) }
+        }
+        val payload = buildJsonObject { put("data", data) }.toString()
+        val (code, body) = authed { t ->
+            Request.Builder().url("$base/auth/v1/user")
+                .header("apikey", Cfg.anonKey)
+                .header("Authorization", "Bearer $t")
+                .put(payload.toRequestBody(JSON_MT))
+                .build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        val s = store.get() ?: throw AuthExpired()
+        val meta = JSON.parseToJsonElement(body).jsonObject["user_metadata"] as? JsonObject
+        val ns = s.copy(
+            name = meta?.str("full_name") ?: s.name,
+            avatar = meta?.str("avatar_url") ?: s.avatar
+        )
+        store.save(ns)
+        return ns
+    }
+
+    /** Uploads a JPEG (already compressed to < 1 MB) and returns its public URL. */
+    suspend fun uploadAvatar(bytes: ByteArray): String {
+        val uid = (store.get() ?: throw AuthExpired()).userId
+        val (code, body) = authed { t ->
+            Request.Builder().url("$base/storage/v1/object/avatars/$uid/avatar.jpg")
+                .header("apikey", Cfg.anonKey)
+                .header("Authorization", "Bearer $t")
+                .header("x-upsert", "true")
+                .post(bytes.toRequestBody("image/jpeg".toMediaType()))
+                .build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+        return "$base/storage/v1/object/public/avatars/$uid/avatar.jpg?v=${System.currentTimeMillis()}"
+    }
+
+    // ---- library ----
     suspend fun loadLibrary(): List<LibraryItem> {
         val (code, body) = authed { t ->
             Request.Builder()
@@ -320,6 +399,30 @@ class MetadataApi(private val http: Http) {
 
     suspend fun topAnime(): List<MediaResult> =
         jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true"))
+
+    // ---- real season / episode limits ----
+    /** season number -> number of episodes, from TVMaze. */
+    suspend fun tvmazeSeasons(showId: String): Map<Int, Int> {
+        val url = HttpUrl.Builder().scheme("https").host("api.tvmaze.com")
+            .addPathSegments("shows/$showId/episodes")
+            .build()
+        val arr = JSON.parseToJsonElement(getJson(url, "Episodes", tvmazeLimit)) as? JsonArray ?: return emptyMap()
+        val counts = mutableMapOf<Int, Int>()
+        arr.forEach { el ->
+            val s = (el as? JsonObject)?.str("season")?.toIntOrNull() ?: return@forEach
+            counts[s] = (counts[s] ?: 0) + 1
+        }
+        return counts
+    }
+
+    /** Total episodes of an anime (null while it is still airing / unknown). */
+    suspend fun animeEpisodes(malId: String): Int? {
+        val url = HttpUrl.Builder().scheme("https").host("api.jikan.moe")
+            .addPathSegments("v4/anime/$malId")
+            .build()
+        val data = JSON.parseToJsonElement(getJson(url, "Anime", jikanLimit)).jsonObject["data"] as? JsonObject
+        return data?.str("episodes")?.toIntOrNull()
+    }
 
     // ---- iTunes (movies) ----
     private suspend fun itunesMovies(q: String): List<MediaResult> {
@@ -441,7 +544,8 @@ class MetadataApi(private val http: Http) {
                 year = year,
                 posterUrl = jpg?.str("large_image_url") ?: jpg?.str("image_url"),
                 overview = o.str("synopsis") ?: "",
-                score = o.str("score")?.toDoubleOrNull()
+                score = o.str("score")?.toDoubleOrNull(),
+                episodes = o.str("episodes")?.toIntOrNull()
             )
         }
     }

@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.saucyfy.app.data.Detail
 import com.saucyfy.app.data.LibraryItem
+import com.saucyfy.app.data.Limits
 import com.saucyfy.app.data.MediaType
 import com.saucyfy.app.data.Status
 import com.saucyfy.app.data.statusEnum
@@ -50,6 +51,7 @@ import kotlin.math.roundToInt
 fun DetailSheet(
     d: Detail,
     existing: LibraryItem?,
+    limits: Limits?,
     onDismiss: () -> Unit,
     onSave: (Status, Int?, Int?, Int?, String?) -> Unit,
     onRemove: () -> Unit
@@ -61,6 +63,17 @@ fun DetailSheet(
     var episode by remember { mutableIntStateOf(existing?.episode ?: 0) }
     var notes by remember { mutableStateOf(existing?.notes ?: "") }
     val hasProgress = d.type != MediaType.MOVIE
+
+    // Real limits when we know them, sane ceilings while they load.
+    val maxSeason = limits?.seasons?.keys?.maxOrNull() ?: 40
+    fun epMax(s: Int): Int = when (d.type) {
+        MediaType.TV -> limits?.seasons?.get(s) ?: 100
+        MediaType.ANIME -> limits?.totalEpisodes ?: 3000
+        MediaType.MOVIE -> 0
+    }
+    val knownEp = (d.type == MediaType.TV && limits?.seasons != null) ||
+        (d.type == MediaType.ANIME && limits?.totalEpisodes != null)
+    val knownSeason = d.type == MediaType.TV && limits?.seasons != null
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -139,9 +152,14 @@ fun DetailSheet(
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         if (d.type == MediaType.TV) {
-                            Stepper("Season", season, 1) { season = it }
+                            Stepper("Season", season.coerceAtMost(maxSeason), 1, maxSeason, knownSeason) {
+                                season = it
+                                episode = minOf(episode, epMax(it))
+                            }
                         }
-                        Stepper("Episode", episode, 0) { episode = it }
+                        Stepper("Episode", episode.coerceAtMost(epMax(season)), 0, epMax(season), knownEp) {
+                            episode = it
+                        }
                     }
                 }
             }
@@ -166,11 +184,13 @@ fun DetailSheet(
                 }
                 Button(
                     onClick = {
+                        val s = season.coerceIn(1, maxSeason)
+                        val e = episode.coerceIn(0, epMax(s))
                         onSave(
                             status,
                             rating.takeIf { it > 0 },
-                            if (d.type == MediaType.TV) season else null,
-                            if (hasProgress && episode > 0) episode else null,
+                            if (d.type == MediaType.TV) s else null,
+                            if (hasProgress && e > 0) e else null,
                             notes.trim().ifBlank { null }
                         )
                     },
@@ -185,15 +205,19 @@ fun DetailSheet(
 }
 
 @Composable
-private fun Stepper(label: String, value: Int, min: Int, onChange: (Int) -> Unit) {
+private fun Stepper(label: String, value: Int, min: Int, max: Int, showMax: Boolean, onChange: (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FilledTonalIconButton(onClick = { if (value > min) onChange(value - 1) }) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FilledTonalIconButton(onClick = { if (value > min) onChange(value - 1) }, enabled = value > min) {
                 Text("−", fontSize = 22.sp)
             }
-            Text("$value", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            FilledTonalIconButton(onClick = { onChange(value + 1) }) {
+            Text(
+                if (showMax) "$value / $max" else "$value",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            FilledTonalIconButton(onClick = { if (value < max) onChange(value + 1) }, enabled = value < max) {
                 Icon(Icons.Filled.Add, "Increase")
             }
         }

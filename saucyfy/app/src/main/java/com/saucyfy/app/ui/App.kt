@@ -1,5 +1,9 @@
 package com.saucyfy.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,6 +69,10 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Detail?>(null) }
 
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) vm.setAvatar(uri)
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -86,31 +94,43 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
         }
     ) { pad ->
         val m = Modifier.padding(pad).fillMaxSize()
-        when (tab) {
-            0 -> LibraryScreen(
-                ui = ui,
-                onOpen = { detail = it },
-                onBump = { vm.bumpEpisode(it) },
-                onRefresh = { vm.refreshLibrary() },
-                onFind = { tab = 1 },
-                modifier = m
-            )
-            1 -> SearchScreen(
-                ui = ui,
-                onQuery = { vm.onQuery(it) },
-                onFilter = { vm.setFilter(it) },
-                onOpen = { detail = it },
-                modifier = m
-            )
-            else -> ProfileScreen(ui = ui, onSignOut = { vm.signOut() }, modifier = m)
+        Crossfade(targetState = tab, label = "tab") { t ->
+            when (t) {
+                0 -> LibraryScreen(
+                    ui = ui,
+                    onOpen = { detail = it },
+                    onBump = { vm.bumpEpisode(it) },
+                    onRefresh = { vm.refreshLibrary() },
+                    onFind = { tab = 1 },
+                    modifier = m
+                )
+                1 -> SearchScreen(
+                    ui = ui,
+                    onQuery = { vm.onQuery(it) },
+                    onFilter = { vm.setFilter(it) },
+                    onOpen = { detail = it },
+                    modifier = m
+                )
+                else -> ProfileScreen(
+                    ui = ui,
+                    onSignOut = { vm.signOut() },
+                    onPickAvatar = {
+                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    onRename = { vm.updateName(it) },
+                    modifier = m
+                )
+            }
         }
     }
 
     detail?.let { d ->
+        LaunchedEffect(d.type, d.externalId) { vm.loadLimits(d) }
         val existing = ui.library.firstOrNull { it.mediaType == d.type.key && it.externalId == d.externalId }
         DetailSheet(
             d = d,
             existing = existing,
+            limits = ui.limits[d.type.key + ":" + d.externalId],
             onDismiss = { detail = null },
             onSave = { st, r, s, e, n -> vm.save(d, st, r, s, e, n) { detail = null } },
             onRemove = { existing?.let { vm.remove(it) { detail = null } } }

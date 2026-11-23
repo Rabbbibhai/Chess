@@ -27,7 +27,7 @@ enum class MediaType(val key: String, val label: String) {
 
 enum class Status(val key: String, val label: String) {
     WATCHING("watching", "Watching"),
-    WATCHED("watched", "Watched"),
+    WATCHED("watched", "Finished"),
     PLANNED("plan_to_watch", "To watch"),
     DROPPED("dropped", "Dropped");
 
@@ -35,6 +35,12 @@ enum class Status(val key: String, val label: String) {
         fun from(k: String?): Status = entries.firstOrNull { it.key == k } ?: PLANNED
     }
 }
+
+/** Real season / episode limits for a title, so the counters can't go past what exists. */
+data class Limits(
+    val seasons: Map<Int, Int>? = null, // season number -> episode count (TV)
+    val totalEpisodes: Int? = null // anime
+)
 
 /** A search / discover result from a public metadata API. */
 data class MediaResult(
@@ -44,7 +50,8 @@ data class MediaResult(
     val year: String,
     val posterUrl: String?,
     val overview: String,
-    val score: Double?
+    val score: Double?,
+    val episodes: Int? = null
 )
 
 /** Everything the detail sheet needs, whether it came from search or the library. */
@@ -55,10 +62,11 @@ data class Detail(
     val year: String,
     val posterUrl: String?,
     val overview: String,
-    val score: Double?
+    val score: Double?,
+    val episodes: Int? = null
 )
 
-fun MediaResult.toDetail() = Detail(type, externalId, title, year, posterUrl, overview, score)
+fun MediaResult.toDetail() = Detail(type, externalId, title, year, posterUrl, overview, score, episodes)
 
 @Serializable
 data class LibraryItem(
@@ -80,7 +88,7 @@ data class LibraryItem(
 val LibraryItem.type: MediaType get() = MediaType.from(mediaType)
 val LibraryItem.statusEnum: Status get() = Status.from(status)
 
-fun LibraryItem.toDetail() = Detail(type, externalId, title, year ?: "", posterUrl, overview ?: "", null)
+fun LibraryItem.toDetail() = Detail(type, externalId, title, year ?: "", posterUrl, overview ?: "", null, null)
 
 fun LibraryItem.progressLabel(): String? {
     if (type == MediaType.MOVIE) return null
