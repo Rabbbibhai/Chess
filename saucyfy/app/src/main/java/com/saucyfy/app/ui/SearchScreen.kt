@@ -48,6 +48,7 @@ import com.saucyfy.app.data.Detail
 import com.saucyfy.app.data.LibraryItem
 import com.saucyfy.app.data.MediaResult
 import com.saucyfy.app.data.MediaType
+import com.saucyfy.app.data.Status
 import com.saucyfy.app.data.statusEnum
 import com.saucyfy.app.data.toDetail
 
@@ -57,6 +58,7 @@ fun SearchScreen(
     onQuery: (String) -> Unit,
     onFilter: (MediaType?) -> Unit,
     onOpen: (Detail) -> Unit,
+    onQuickSave: (Detail, Status) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val focus = LocalFocusManager.current
@@ -73,7 +75,6 @@ fun SearchScreen(
         Text(
             "Discover",
             style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 12.dp)
         )
         OutlinedTextField(
@@ -87,7 +88,7 @@ fun SearchScreen(
                     IconButton(onClick = { onQuery("") }) { Icon(Icons.Filled.Close, "Clear") }
                 }
             },
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(20.dp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
             modifier = Modifier
@@ -120,7 +121,7 @@ fun SearchScreen(
             ui.results.isEmpty() -> EmptyState("No matches", "Check the spelling or try another filter.")
             else -> LazyColumn(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (corrected != null) {
                     item {
@@ -134,7 +135,12 @@ fun SearchScreen(
                 }
                 items(ui.results) { r ->
                     val inLib = ui.library.firstOrNull { it.mediaType == r.type.key && it.externalId == r.externalId }
-                    ResultRow(r, inLib, onClick = { onOpen(r.toDetail()) })
+                    ResultRow(
+                        r,
+                        inLib,
+                        onClick = { onOpen(r.toDetail()) },
+                        onQuickSave = { st -> onQuickSave(r.toDetail(), st) }
+                    )
                 }
             }
         }
@@ -160,8 +166,7 @@ private fun PosterRow(title: String, list: List<MediaResult>, onOpen: (Detail) -
     Text(
         title,
         style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 10.dp)
+        modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 10.dp)
     )
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
@@ -170,11 +175,14 @@ private fun PosterRow(title: String, list: List<MediaResult>, onOpen: (Detail) -
         items(list) { r ->
             Column(
                 Modifier
-                    .width(120.dp)
+                    .width(124.dp)
                     .clickable { onOpen(r.toDetail()) },
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Poster(r.posterUrl, Modifier.fillMaxWidth().aspectRatio(2f / 3f))
+                Box {
+                    Poster(r.posterUrl, Modifier.fillMaxWidth().aspectRatio(2f / 3f))
+                    ScoreBadge(r.score, Modifier.align(Alignment.BottomStart).padding(6.dp))
+                }
                 Text(
                     r.title,
                     maxLines = 2,
@@ -188,21 +196,34 @@ private fun PosterRow(title: String, list: List<MediaResult>, onOpen: (Detail) -
 }
 
 @Composable
-private fun ResultRow(r: MediaResult, inLibrary: LibraryItem?, onClick: () -> Unit) {
+private fun ResultRow(
+    r: MediaResult,
+    inLibrary: LibraryItem?,
+    onClick: () -> Unit,
+    onQuickSave: (Status) -> Unit
+) {
+    val isMovie = r.type == MediaType.MOVIE
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            Modifier.padding(10.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Poster(r.posterUrl, Modifier.width(56.dp).height(84.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(r.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+            Box {
+                Poster(r.posterUrl, Modifier.width(72.dp).height(108.dp))
+                ScoreBadge(r.score, Modifier.align(Alignment.BottomStart).padding(4.dp))
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(
+                    r.title,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium
+                )
                 Text(
                     listOf(r.type.label, r.year).filter { it.isNotBlank() }.joinToString(" • "),
                     style = MaterialTheme.typography.bodySmall,
@@ -217,10 +238,13 @@ private fun ResultRow(r: MediaResult, inLibrary: LibraryItem?, onClick: () -> Un
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                if (isMovie) {
+                    MovieActions(inLibrary?.statusEnum, onQuickSave, Modifier.padding(top = 4.dp))
+                } else if (inLibrary != null) {
+                    Pill(inLibrary.statusEnum.label, statusColor(inLibrary.statusEnum))
+                }
             }
-            if (inLibrary != null) {
-                Pill(inLibrary.statusEnum.label, statusColor(inLibrary.statusEnum))
-            } else {
+            if (!isMovie && inLibrary == null) {
                 Icon(Icons.Filled.Add, "Add", tint = MaterialTheme.colorScheme.primary)
             }
         }

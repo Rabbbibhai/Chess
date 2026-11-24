@@ -36,6 +36,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -44,12 +46,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saucyfy.app.AppViewModel
 import com.saucyfy.app.UiState
 import com.saucyfy.app.data.Detail
+import com.saucyfy.app.data.toDetail
 
 @Composable
 fun App(vm: AppViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scheme = MaterialTheme.colorScheme
 
     // Only check for new messages while the app is on screen.
     DisposableEffect(lifecycleOwner) {
@@ -68,7 +72,18 @@ fun App(vm: AppViewModel) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(scheme.background)
+            // soft theme-colored glow at the top of every screen
+            .background(
+                Brush.verticalGradient(
+                    0f to scheme.primaryContainer.copy(alpha = 0.30f),
+                    0.45f to Color.Transparent
+                )
+            )
+    ) {
         when {
             ui.booting -> Unit
             ui.session == null -> LoginScreen(busy = ui.authBusy, onSubmit = { e, p, up -> vm.authenticate(e, p, up) })
@@ -103,10 +118,13 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
     BackHandler(enabled = tab == 2 && ui.viewingFriend != null) { vm.closeFriend() }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         bottomBar = {
             if (!chatOpen) {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    tonalElevation = 0.dp
+                ) {
                     val tabs = listOf(
                         "Library" to Icons.Filled.Home,
                         "Discover" to Icons.Filled.Search,
@@ -139,6 +157,9 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                     ui = ui,
                     onOpen = { detail = it },
                     onBump = { vm.bumpEpisode(it) },
+                    onSetStatus = { item, st ->
+                        vm.save(item.toDetail(), st, item.rating, item.season, item.episode, item.notes) { }
+                    },
                     onRefresh = { vm.refreshLibrary() },
                     onFind = { tab = 1 },
                     modifier = m
@@ -148,6 +169,7 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                     onQuery = { vm.onQuery(it) },
                     onFilter = { vm.setFilter(it) },
                     onOpen = { detail = it },
+                    onQuickSave = { d, st -> vm.save(d, st, null, null, null, null) { } },
                     modifier = m
                 )
                 2 -> {

@@ -2,6 +2,7 @@ package com.saucyfy.app.ui
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -62,7 +63,8 @@ fun DetailSheet(
     var season by remember { mutableIntStateOf(existing?.season ?: 1) }
     var episode by remember { mutableIntStateOf(existing?.episode ?: 0) }
     var notes by remember { mutableStateOf(existing?.notes ?: "") }
-    val hasProgress = d.type != MediaType.MOVIE
+    val isMovie = d.type == MediaType.MOVIE
+    val hasProgress = !isMovie
 
     // Real limits when we know them, sane ceilings while they load.
     val maxSeason = limits?.seasons?.keys?.maxOrNull() ?: 40
@@ -89,17 +91,17 @@ fun DetailSheet(
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Poster(d.posterUrl, Modifier.width(96.dp).height(144.dp))
+                Box {
+                    Poster(d.posterUrl, Modifier.width(104.dp).height(156.dp))
+                    ScoreBadge(d.score, Modifier.align(Alignment.BottomStart).padding(5.dp))
+                }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(d.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(d.title, style = MaterialTheme.typography.titleLarge)
                     Text(
                         listOf(d.type.label, d.year).filter { it.isNotBlank() }.joinToString(" • "),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    d.score?.takeIf { it > 0 }?.let {
-                        Text("★ " + "%.1f".format(it), color = Brand.Amber, fontWeight = FontWeight.SemiBold)
-                    }
                     if (d.overview.isNotBlank()) {
                         Text(
                             d.overview,
@@ -112,11 +114,13 @@ fun DetailSheet(
                 }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Status", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Status.entries.forEach { s ->
-                        FilterChip(selected = status == s, onClick = { status = s }, label = { Text(s.label) })
+            if (!isMovie) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Status", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Status.entries.forEach { s ->
+                            FilterChip(selected = status == s, onClick = { status = s }, label = { Text(s.label) })
+                        }
                     }
                 }
             }
@@ -143,7 +147,37 @@ fun DetailSheet(
                 )
             }
 
-            if (hasProgress) {
+            if (isMovie) {
+                // Movies: one tap, no status picker.
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Add to your list",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        listOf(Status.PLANNED, Status.WATCHED).forEach { s ->
+                            val selected = existing?.statusEnum == s
+                            val go = {
+                                onSave(s, rating.takeIf { it > 0 }, null, null, notes.trim().ifBlank { null })
+                            }
+                            if (selected) {
+                                Button(
+                                    onClick = go,
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.weight(1f).height(52.dp)
+                                ) { Text("✓ " + s.label, fontWeight = FontWeight.SemiBold) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = go,
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.weight(1f).height(52.dp)
+                                ) { Text(s.label, fontWeight = FontWeight.SemiBold) }
+                            }
+                        }
+                    }
+                }
+            } else if (hasProgress) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "Left off at",
@@ -168,37 +202,41 @@ fun DetailSheet(
                 value = notes,
                 onValueChange = { notes = it },
                 label = { Text("Notes (optional)") },
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(16.dp),
                 minLines = 2,
                 maxLines = 4,
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (existing != null) {
-                    OutlinedButton(
-                        onClick = onRemove,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.height(52.dp)
-                    ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            if (existing != null || !isMovie) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (existing != null) {
+                        OutlinedButton(
+                            onClick = onRemove,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = if (isMovie) Modifier.weight(1f).height(52.dp) else Modifier.height(52.dp)
+                        ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                    }
+                    if (!isMovie) {
+                        Button(
+                            onClick = {
+                                val s = season.coerceIn(1, maxSeason)
+                                val e = episode.coerceIn(0, epMax(s))
+                                onSave(
+                                    status,
+                                    rating.takeIf { it > 0 },
+                                    if (d.type == MediaType.TV) s else null,
+                                    if (hasProgress && e > 0) e else null,
+                                    notes.trim().ifBlank { null }
+                                )
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(52.dp)
+                        ) { Text(if (existing != null) "Update" else "Add to library", fontWeight = FontWeight.SemiBold) }
+                    }
                 }
-                Button(
-                    onClick = {
-                        val s = season.coerceIn(1, maxSeason)
-                        val e = episode.coerceIn(0, epMax(s))
-                        onSave(
-                            status,
-                            rating.takeIf { it > 0 },
-                            if (d.type == MediaType.TV) s else null,
-                            if (hasProgress && e > 0) e else null,
-                            notes.trim().ifBlank { null }
-                        )
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(52.dp)
-                ) { Text(if (existing != null) "Update" else "Add to library", fontWeight = FontWeight.SemiBold) }
             }
         }
     }
@@ -214,8 +252,7 @@ private fun Stepper(label: String, value: Int, min: Int, max: Int, showMax: Bool
             }
             Text(
                 if (showMax) "$value / $max" else "$value",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+                style = MaterialTheme.typography.titleMedium
             )
             FilledTonalIconButton(onClick = { if (value < max) onChange(value + 1) }, enabled = value < max) {
                 Icon(Icons.Filled.Add, "Increase")

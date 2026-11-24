@@ -4,20 +4,25 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -54,126 +59,207 @@ fun LibraryScreen(
     ui: UiState,
     onOpen: (Detail) -> Unit,
     onBump: (LibraryItem) -> Unit,
+    onSetStatus: (LibraryItem, Status) -> Unit,
     onRefresh: () -> Unit,
     onFind: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var filter by rememberSaveable { mutableStateOf<String?>(null) }
     val shown = ui.library.filter { filter == null || it.status == filter }
+    val watching = ui.library.filter { it.status == Status.WATCHING.key && it.type != MediaType.MOVIE }
 
-    Column(modifier) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, end = 8.dp, top = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Library", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "${ui.library.size} titles",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Refresh") }
-        }
-
-        Row(
-            Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = filter == null,
-                onClick = { filter = null },
-                label = { Text("All ${ui.library.size}") }
-            )
-            Status.entries.forEach { s ->
-                val n = ui.library.count { it.status == s.key }
-                FilterChip(
-                    selected = filter == s.key,
-                    onClick = { filter = s.key },
-                    label = { Text("${s.label} $n") }
-                )
-            }
-        }
-
-        when {
-            ui.libLoading && ui.library.isEmpty() ->
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            shown.isEmpty() -> EmptyState(
-                title = if (ui.library.isEmpty()) "Your library is empty" else "Nothing here yet",
-                body = "Search for a movie, show or anime and save it with a rating or where you left off.",
-                action = { Button(onClick = onFind) { Text("Find something") } }
-            )
-            else -> LazyColumn(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+    LazyColumn(
+        modifier,
+        contentPadding = PaddingValues(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 8.dp, top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                items(shown, key = { it.id ?: (it.mediaType + it.externalId) }) { item ->
-                    LibraryCard(
-                        item,
-                        onClick = { onOpen(item.toDetail()) },
-                        onBump = { onBump(item) },
-                        modifier = Modifier.animateItem()
+                Column(Modifier.weight(1f)) {
+                    Text("Library", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        "${ui.library.size} titles · ${ui.library.count { it.status == Status.WATCHED.key }} finished",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Refresh") }
+            }
+        }
+        item {
+            Row(
+                Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = filter == null,
+                    onClick = { filter = null },
+                    label = { Text("All ${ui.library.size}") }
+                )
+                Status.entries.forEach { s ->
+                    val n = ui.library.count { it.status == s.key }
+                    FilterChip(
+                        selected = filter == s.key,
+                        onClick = { filter = s.key },
+                        label = { Text("${s.label} $n") }
+                    )
+                }
+            }
+        }
+        if (filter == null && watching.isNotEmpty()) {
+            item {
+                Column {
+                    Text(
+                        "Continue watching",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(start = 20.dp, top = 6.dp, bottom = 10.dp)
+                    )
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(watching, key = { it.id ?: (it.mediaType + it.externalId) }) { item ->
+                            ContinueCard(item, onClick = { onOpen(item.toDetail()) }, onBump = { onBump(item) })
+                        }
+                    }
+                }
+            }
+        }
+        if (ui.libLoading && ui.library.isEmpty()) {
+            item {
+                Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+        } else if (shown.isEmpty()) {
+            item {
+                EmptyState(
+                    title = if (ui.library.isEmpty()) "Your library is empty" else "Nothing here yet",
+                    body = "Search for a movie, show or anime and save it with a rating or where you left off.",
+                    action = { Button(onClick = onFind) { Text("Find something") } }
+                )
+            }
+        } else {
+            items(shown, key = { it.id ?: (it.mediaType + it.externalId) }) { item ->
+                LibraryCard(
+                    item,
+                    onClick = { onOpen(item.toDetail()) },
+                    onBump = { onBump(item) },
+                    onFinish = { onSetStatus(item, Status.WATCHED) },
+                    modifier = Modifier.animateItem().padding(horizontal = 16.dp)
+                )
             }
         }
     }
 }
 
+/** Compact card for shows / anime you are in the middle of, with a +1 episode button. */
 @Composable
-private fun LibraryCard(item: LibraryItem, onClick: () -> Unit, onBump: () -> Unit, modifier: Modifier = Modifier) {
+private fun ContinueCard(item: LibraryItem, onClick: () -> Unit, onBump: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+        modifier = Modifier.width(290.dp)
+    ) {
+        Row(
+            Modifier.padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Poster(item.posterUrl, Modifier.width(56.dp).height(84.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    item.title,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    item.progressLabel() ?: "Not started",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            FilledTonalIconButton(onClick = onBump) { Icon(Icons.Filled.Add, "Next episode") }
+        }
+    }
+}
+
+@Composable
+private fun LibraryCard(
+    item: LibraryItem,
+    onClick: () -> Unit,
+    onBump: () -> Unit,
+    onFinish: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val s = item.statusEnum
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = modifier.fillMaxWidth()
     ) {
-        Row(Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Poster(item.posterUrl, Modifier.width(66.dp).height(98.dp))
-            Column(
+        Row(Modifier.height(IntrinsicSize.Min)) {
+            // colored edge shows the status at a glance
+            Box(Modifier.width(5.dp).fillMaxHeight().background(statusColor(s)))
+            Row(
                 Modifier
                     .weight(1f)
-                    .height(98.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                    .padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column {
-                    Text(
-                        item.title,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        listOfNotNull(item.type.label, item.year?.takeIf { it.isNotBlank() }).joinToString(" • "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pill(s.label, statusColor(s))
-                    item.rating?.takeIf { it > 0 }?.let {
-                        Icon(Icons.Filled.Star, null, tint = Brand.Amber, modifier = Modifier.size(14.dp))
-                        Text("$it/10", style = MaterialTheme.typography.labelMedium)
-                    }
-                    item.progressLabel()?.let {
+                Poster(item.posterUrl, Modifier.width(66.dp).height(98.dp))
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .height(98.dp),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
                         Text(
-                            it,
-                            style = MaterialTheme.typography.labelMedium,
+                            item.title,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            listOfNotNull(item.type.label, item.year?.takeIf { it.isNotBlank() }).joinToString(" • "),
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Pill(s.label, statusColor(s))
+                        item.rating?.takeIf { it > 0 }?.let {
+                            Icon(Icons.Filled.Star, null, tint = Brand.Amber, modifier = Modifier.size(14.dp))
+                            Text("$it/10", style = MaterialTheme.typography.labelMedium)
+                        }
+                        item.progressLabel()?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
-            }
-            if (s == Status.WATCHING && item.type != MediaType.MOVIE) {
-                FilledTonalIconButton(onClick = onBump, modifier = Modifier.align(Alignment.CenterVertically)) {
-                    Icon(Icons.Filled.Add, "Next episode")
+                if (s == Status.WATCHING && item.type != MediaType.MOVIE) {
+                    FilledTonalIconButton(onClick = onBump, modifier = Modifier.align(Alignment.CenterVertically)) {
+                        Icon(Icons.Filled.Add, "Next episode")
+                    }
+                } else if (item.type == MediaType.MOVIE && s == Status.PLANNED) {
+                    FilledTonalIconButton(onClick = onFinish, modifier = Modifier.align(Alignment.CenterVertically)) {
+                        Icon(Icons.Filled.Check, "Mark finished")
+                    }
                 }
             }
         }

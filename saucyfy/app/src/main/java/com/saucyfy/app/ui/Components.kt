@@ -1,16 +1,27 @@
 package com.saucyfy.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,10 +45,12 @@ fun statusColor(s: Status): Color = when (s) {
 
 @Composable
 fun Poster(url: String?, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(14.dp)
     Box(
         modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), shape),
         contentAlignment = Alignment.Center
     ) {
         if (url.isNullOrBlank()) {
@@ -53,6 +66,27 @@ fun Poster(url: String?, modifier: Modifier = Modifier) {
     }
 }
 
+/** Small "star 7.8" chip that sits on top of a poster. */
+@Composable
+fun ScoreBadge(score: Double?, modifier: Modifier = Modifier) {
+    if (score == null || score <= 0.0) return
+    Row(
+        modifier
+            .background(Color(0xCC000000), RoundedCornerShape(8.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Filled.Star, null, tint = Brand.Amber, modifier = Modifier.size(11.dp))
+        Spacer(Modifier.width(2.dp))
+        Text(
+            "%.1f".format(score),
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
 @Composable
 fun Pill(text: String, color: Color, modifier: Modifier = Modifier) {
     Text(
@@ -61,16 +95,40 @@ fun Pill(text: String, color: Color, modifier: Modifier = Modifier) {
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.SemiBold,
         modifier = modifier
-            .background(color.copy(alpha = 0.15f), RoundedCornerShape(50))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
+            .background(color.copy(alpha = 0.16f), RoundedCornerShape(50))
+            .padding(horizontal = 9.dp, vertical = 3.dp)
     )
+}
+
+/** Movies only: one tap to put a movie on "To watch" or mark it "Finished". */
+@Composable
+fun MovieActions(current: Status?, onPick: (Status) -> Unit, modifier: Modifier = Modifier) {
+    val pad = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(Status.PLANNED, Status.WATCHED).forEach { s ->
+            val selected = current == s
+            if (selected) {
+                Button(
+                    onClick = { onPick(s) },
+                    contentPadding = pad,
+                    modifier = Modifier.height(34.dp)
+                ) { Text("✓ " + s.label, style = MaterialTheme.typography.labelMedium) }
+            } else {
+                OutlinedButton(
+                    onClick = { onPick(s) },
+                    contentPadding = pad,
+                    modifier = Modifier.height(34.dp)
+                ) { Text(s.label, style = MaterialTheme.typography.labelMedium) }
+            }
+        }
+    }
 }
 
 @Composable
 fun InfoCard(text: String) {
     Surface(
         color = MaterialTheme.colorScheme.primaryContainer,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -92,7 +150,7 @@ fun EmptyState(title: String, body: String, action: (@Composable () -> Unit)? = 
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(title, style = MaterialTheme.typography.titleMedium)
         Text(
             body,
             style = MaterialTheme.typography.bodyMedium,
