@@ -49,6 +49,9 @@ import com.saucyfy.app.data.LibraryItem
 import com.saucyfy.app.data.MediaResult
 import com.saucyfy.app.data.MediaType
 import com.saucyfy.app.data.Status
+import com.saucyfy.app.data.isSingle
+import com.saucyfy.app.data.labelFor
+import com.saucyfy.app.data.plural
 import com.saucyfy.app.data.statusEnum
 import com.saucyfy.app.data.toDetail
 
@@ -64,12 +67,8 @@ fun SearchScreen(
     val focus = LocalFocusManager.current
     val sugg = ui.suggestion
     val corrected = ui.corrected
-    val filters = listOf<Pair<String, MediaType?>>(
-        "All" to null,
-        "Movies" to MediaType.MOVIE,
-        "Shows" to MediaType.TV,
-        "Anime" to MediaType.ANIME
-    )
+    val filters: List<Pair<String, MediaType?>> =
+        listOf<Pair<String, MediaType?>>("All" to null) + MediaType.entries.map { it.plural to it }
 
     Column(modifier) {
         Text(
@@ -81,7 +80,7 @@ fun SearchScreen(
             value = ui.query,
             onValueChange = onQuery,
             singleLine = true,
-            placeholder = { Text("Search movies, shows, anime") },
+            placeholder = { Text("Search movies, shows, anime, manga, music") },
             leadingIcon = { Icon(Icons.Filled.Search, null) },
             trailingIcon = {
                 if (ui.query.isNotEmpty()) {
@@ -149,25 +148,26 @@ fun SearchScreen(
 
 @Composable
 private fun Discover(ui: UiState, onOpen: (Detail) -> Unit) {
-    val popular = ui.trending.filter { ui.filter == null || it.type == ui.filter }
-    val anime = if (ui.filter == null || ui.filter == MediaType.ANIME) ui.topAnime else emptyList()
+    val f = ui.filter
+    val popular = ui.trending.filter { f == null || it.type == f }
+    val anime = if (f == null || f == MediaType.ANIME) ui.topAnime else emptyList()
+    val manga = if (f == null || f == MediaType.MANGA) ui.topManga else emptyList()
+    val tracks = if (f == null || f == MediaType.MUSIC) ui.topTracks else emptyList()
 
     Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
         if (popular.isNotEmpty()) PosterRow("Popular now", popular, onOpen)
         if (anime.isNotEmpty()) PosterRow("Top airing anime", anime, onOpen)
-        if (popular.isEmpty() && anime.isEmpty()) {
+        if (manga.isNotEmpty()) PosterRow("Top manga", manga, onOpen)
+        if (tracks.isNotEmpty()) PosterRow("Top tracks", tracks, onOpen, square = true)
+        if (popular.isEmpty() && anime.isEmpty() && manga.isEmpty() && tracks.isEmpty()) {
             EmptyState("Search to get started", "Find a title, then save it to your library.")
         }
     }
 }
 
 @Composable
-private fun PosterRow(title: String, list: List<MediaResult>, onOpen: (Detail) -> Unit) {
-    Text(
-        title,
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 10.dp)
-    )
+private fun PosterRow(title: String, list: List<MediaResult>, onOpen: (Detail) -> Unit, square: Boolean = false) {
+    SectionHeader(title)
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -180,7 +180,7 @@ private fun PosterRow(title: String, list: List<MediaResult>, onOpen: (Detail) -
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Box {
-                    Poster(r.posterUrl, Modifier.fillMaxWidth().aspectRatio(2f / 3f))
+                    Poster(r.posterUrl, Modifier.fillMaxWidth().aspectRatio(if (square) 1f else 2f / 3f))
                     ScoreBadge(r.score, Modifier.align(Alignment.BottomStart).padding(6.dp))
                 }
                 Text(
@@ -202,7 +202,8 @@ private fun ResultRow(
     onClick: () -> Unit,
     onQuickSave: (Status) -> Unit
 ) {
-    val isMovie = r.type == MediaType.MOVIE
+    val single = r.type.isSingle
+    val posterHeight = if (r.type == MediaType.MUSIC) 72.dp else 108.dp
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(20.dp),
@@ -214,7 +215,7 @@ private fun ResultRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Box {
-                Poster(r.posterUrl, Modifier.width(72.dp).height(108.dp))
+                Poster(r.posterUrl, Modifier.width(72.dp).height(posterHeight))
                 ScoreBadge(r.score, Modifier.align(Alignment.BottomStart).padding(4.dp))
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -238,13 +239,13 @@ private fun ResultRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (isMovie) {
-                    MovieActions(inLibrary?.statusEnum, onQuickSave, Modifier.padding(top = 4.dp))
+                if (single) {
+                    SingleActions(r.type, inLibrary?.statusEnum, onQuickSave, Modifier.padding(top = 4.dp))
                 } else if (inLibrary != null) {
-                    Pill(inLibrary.statusEnum.label, statusColor(inLibrary.statusEnum))
+                    Pill(inLibrary.statusEnum.labelFor(r.type), statusColor(inLibrary.statusEnum))
                 }
             }
-            if (!isMovie && inLibrary == null) {
+            if (!single && inLibrary == null) {
                 Icon(Icons.Filled.Add, "Add", tint = MaterialTheme.colorScheme.primary)
             }
         }

@@ -1,5 +1,6 @@
 package com.saucyfy.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,13 +9,11 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -41,7 +40,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.saucyfy.app.UiState
@@ -49,6 +47,9 @@ import com.saucyfy.app.data.Detail
 import com.saucyfy.app.data.LibraryItem
 import com.saucyfy.app.data.MediaType
 import com.saucyfy.app.data.Status
+import com.saucyfy.app.data.isSingle
+import com.saucyfy.app.data.labelFor
+import com.saucyfy.app.data.plural
 import com.saucyfy.app.data.progressLabel
 import com.saucyfy.app.data.statusEnum
 import com.saucyfy.app.data.toDetail
@@ -65,8 +66,11 @@ fun LibraryScreen(
     modifier: Modifier = Modifier
 ) {
     var filter by rememberSaveable { mutableStateOf<String?>(null) }
-    val shown = ui.library.filter { filter == null || it.status == filter }
-    val watching = ui.library.filter { it.status == Status.WATCHING.key && it.type != MediaType.MOVIE }
+    var typeFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    val tObj: MediaType? = typeFilter?.let { MediaType.from(it) }
+    val base = ui.library.filter { typeFilter == null || it.mediaType == typeFilter }
+    val shown = base.filter { filter == null || it.status == filter }
+    val inProgress = base.filter { it.status == Status.WATCHING.key && !it.type.isSingle }
 
     LazyColumn(
         modifier,
@@ -91,6 +95,7 @@ fun LibraryScreen(
                 IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Refresh") }
             }
         }
+        // what kind of media
         item {
             Row(
                 Modifier
@@ -98,34 +103,41 @@ fun LibraryScreen(
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = filter == null,
-                    onClick = { filter = null },
-                    label = { Text("All ${ui.library.size}") }
-                )
-                Status.entries.forEach { s ->
-                    val n = ui.library.count { it.status == s.key }
+                FilterChip(selected = typeFilter == null, onClick = { typeFilter = null }, label = { Text("Everything") })
+                MediaType.entries.forEach { t ->
                     FilterChip(
-                        selected = filter == s.key,
-                        onClick = { filter = s.key },
-                        label = { Text("${s.label} $n") }
+                        selected = typeFilter == t.key,
+                        onClick = { typeFilter = t.key },
+                        label = { Text(t.plural) }
                     )
                 }
             }
         }
-        if (filter == null && watching.isNotEmpty()) {
+        // which status
+        item {
+            Row(
+                Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("All ${base.size}") })
+                Status.entries.forEach { s ->
+                    val n = base.count { it.status == s.key }
+                    val name = if (tObj != null) s.labelFor(tObj) else s.label
+                    FilterChip(selected = filter == s.key, onClick = { filter = s.key }, label = { Text("$name $n") })
+                }
+            }
+        }
+        if (filter == null && inProgress.isNotEmpty()) {
             item {
                 Column {
-                    Text(
-                        "Continue watching",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(start = 20.dp, top = 6.dp, bottom = 10.dp)
-                    )
+                    SectionHeader("Continue")
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(watching, key = { it.id ?: (it.mediaType + it.externalId) }) { item ->
+                        items(inProgress, key = { it.id ?: (it.mediaType + it.externalId) }) { item ->
                             ContinueCard(item, onClick = { onOpen(item.toDetail()) }, onBump = { onBump(item) })
                         }
                     }
@@ -142,7 +154,7 @@ fun LibraryScreen(
             item {
                 EmptyState(
                     title = if (ui.library.isEmpty()) "Your library is empty" else "Nothing here yet",
-                    body = "Search for a movie, show or anime and save it with a rating or where you left off.",
+                    body = "Search for a movie, show, anime, manga or song and save it with a rating or where you left off.",
                     action = { Button(onClick = onFind) { Text("Find something") } }
                 )
             }
@@ -160,7 +172,7 @@ fun LibraryScreen(
     }
 }
 
-/** Compact card for shows / anime you are in the middle of, with a +1 episode button. */
+/** Compact card for things you are in the middle of, with a +1 episode / chapter button. */
 @Composable
 private fun ContinueCard(item: LibraryItem, onClick: () -> Unit, onBump: () -> Unit) {
     Surface(
@@ -188,7 +200,9 @@ private fun ContinueCard(item: LibraryItem, onClick: () -> Unit, onBump: () -> U
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
-            FilledTonalIconButton(onClick = onBump) { Icon(Icons.Filled.Add, "Next episode") }
+            FilledTonalIconButton(onClick = onBump) {
+                Icon(Icons.Filled.Add, if (item.type == MediaType.MANGA) "Next chapter" else "Next episode")
+            }
         }
     }
 }
@@ -202,6 +216,7 @@ private fun LibraryCard(
     modifier: Modifier = Modifier
 ) {
     val s = item.statusEnum
+    val square = item.type == MediaType.MUSIC
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(20.dp),
@@ -217,11 +232,11 @@ private fun LibraryCard(
                     .padding(10.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Poster(item.posterUrl, Modifier.width(66.dp).height(98.dp))
+                Poster(item.posterUrl, Modifier.width(if (square) 80.dp else 66.dp).height(if (square) 80.dp else 98.dp))
                 Column(
                     Modifier
                         .weight(1f)
-                        .height(98.dp),
+                        .height(if (square) 80.dp else 98.dp),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
@@ -238,7 +253,7 @@ private fun LibraryCard(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Pill(s.label, statusColor(s))
+                        Pill(s.labelFor(item.type), statusColor(s))
                         item.rating?.takeIf { it > 0 }?.let {
                             Icon(Icons.Filled.Star, null, tint = Brand.Amber, modifier = Modifier.size(14.dp))
                             Text("$it/10", style = MaterialTheme.typography.labelMedium)
@@ -252,13 +267,13 @@ private fun LibraryCard(
                         }
                     }
                 }
-                if (s == Status.WATCHING && item.type != MediaType.MOVIE) {
+                if (s == Status.WATCHING && !item.type.isSingle) {
                     FilledTonalIconButton(onClick = onBump, modifier = Modifier.align(Alignment.CenterVertically)) {
-                        Icon(Icons.Filled.Add, "Next episode")
+                        Icon(Icons.Filled.Add, "Next")
                     }
-                } else if (item.type == MediaType.MOVIE && s == Status.PLANNED) {
+                } else if (item.type.isSingle && s == Status.PLANNED) {
                     FilledTonalIconButton(onClick = onFinish, modifier = Modifier.align(Alignment.CenterVertically)) {
-                        Icon(Icons.Filled.Check, "Mark finished")
+                        Icon(Icons.Filled.Check, "Mark done")
                     }
                 }
             }

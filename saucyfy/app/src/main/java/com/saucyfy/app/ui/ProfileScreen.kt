@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,6 +51,7 @@ import com.saucyfy.app.BuildConfig
 import com.saucyfy.app.UiState
 import com.saucyfy.app.data.MediaType
 import com.saucyfy.app.data.Status
+import com.saucyfy.app.data.plural
 import com.saucyfy.app.data.type
 
 @Composable
@@ -59,13 +61,14 @@ fun ProfileScreen(
     onPickAvatar: () -> Unit,
     onEditProfile: (name: String, username: String) -> Unit,
     onTheme: (String) -> Unit,
+    onOpenAdmin: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val session = ui.session
     val lib = ui.library
     val rated = lib.mapNotNull { it.rating }.filter { it > 0 }
     val avg = if (rated.isEmpty()) "-" else "%.1f".format(rated.average())
-    val name = session?.name?.ifBlank { null } ?: "Elog watcher"
+    val name = session?.name?.ifBlank { null } ?: "Elog fan"
 
     var editing by remember { mutableStateOf(false) }
     var nameDraft by remember { mutableStateOf("") }
@@ -130,8 +133,7 @@ fun ProfileScreen(
             } else {
                 Text(
                     name.take(1).uppercase(),
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.headlineLarge
                 )
             }
             if (ui.profileBusy) {
@@ -147,7 +149,7 @@ fun ProfileScreen(
         )
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(name, style = MaterialTheme.typography.titleLarge)
                 IconButton(onClick = {
                     nameDraft = name
                     userDraft = ui.myUsername ?: ""
@@ -170,10 +172,10 @@ fun ProfileScreen(
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatCard("${lib.count { it.status == Status.WATCHED.key }}", "Finished", Brand.Grass, Modifier.weight(1f))
-            StatCard("${lib.count { it.status == Status.WATCHING.key }}", "Watching", Brand.Sky, Modifier.weight(1f))
+            StatCard("${lib.count { it.status == Status.WATCHING.key }}", "In progress", Brand.Sky, Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatCard("${lib.count { it.status == Status.PLANNED.key }}", "To watch", Brand.Amber, Modifier.weight(1f))
+            StatCard("${lib.count { it.status == Status.PLANNED.key }}", "Planned", Brand.Amber, Modifier.weight(1f))
             StatCard(avg, "Avg rating", Brand.Coral, Modifier.weight(1f))
         }
 
@@ -183,9 +185,9 @@ fun ProfileScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                MediaStat("Movies", lib.count { it.type == MediaType.MOVIE })
-                MediaStat("Shows", lib.count { it.type == MediaType.TV })
-                MediaStat("Anime", lib.count { it.type == MediaType.ANIME })
+                MediaType.entries.forEach { t ->
+                    MediaStat(t.plural, lib.count { it.type == t })
+                }
             }
         }
 
@@ -196,7 +198,7 @@ fun ProfileScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Theme", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("Theme", style = MaterialTheme.typography.titleSmall)
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -222,12 +224,21 @@ fun ProfileScreen(
                             Text(
                                 t.name,
                                 style = MaterialTheme.typography.labelSmall,
+                                color = t.header,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                             )
                         }
                     }
                 }
             }
+        }
+
+        if (ui.isAdmin) {
+            Button(
+                onClick = onOpenAdmin,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) { Text("Admin panel - publish an update") }
         }
 
         OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) {
@@ -251,7 +262,7 @@ private fun StatCard(value: String, label: String, color: Color, modifier: Modif
         modifier = modifier
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(value, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = color)
+            Text(value, style = MaterialTheme.typography.headlineMedium, color = color)
             Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -260,7 +271,7 @@ private fun StatCard(value: String, label: String, color: Color, modifier: Modif
 @Composable
 private fun MediaStat(label: String, n: Int) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("$n", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("$n", style = MaterialTheme.typography.titleLarge)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

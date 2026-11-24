@@ -2,9 +2,12 @@ package com.saucyfy.app
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.saucyfy.app.data.*
@@ -24,6 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.util.UUID
 
@@ -32,6 +36,11 @@ data class UiState(
     val themeId: String = "midnight",
     val session: Session? = null,
     val myUsername: String? = null,
+    val isAdmin: Boolean = false,
+    val adminOpen: Boolean = false,
+    val updatePrompt: AppUpdate? = null,
+    val whatsNew: AppUpdate? = null,
+    val updateProgress: Float? = null,
     val authBusy: Boolean = false,
     val profileBusy: Boolean = false,
     val library: List<LibraryItem> = emptyList(),
@@ -44,6 +53,8 @@ data class UiState(
     val corrected: String? = null,
     val trending: List<MediaResult> = emptyList(),
     val topAnime: List<MediaResult> = emptyList(),
+    val topManga: List<MediaResult> = emptyList(),
+    val topTracks: List<MediaResult> = emptyList(),
     val limits: Map<String, Limits> = emptyMap(),
     val friends: List<FriendEntry> = emptyList(),
     val friendsLoading: Boolean = false,
@@ -67,6 +78,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val libCache = LibraryCache(app)
     private val chatStore = ChatStore(app)
     private val themePrefs = app.getSharedPreferences("saucyfy_theme", Context.MODE_PRIVATE)
+    private val appPrefs = app.getSharedPreferences("elog_app", Context.MODE_PRIVATE)
     private val http = Http(app.cacheDir)
     private val api = SupabaseApi(http, store)
     private val meta = MetadataApi(http)
@@ -78,6 +90,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var userJob: Job? = null
     private var pollJob: Job? = null
     private var foreground = true
+    private var lastUpdateCheck = 0L
+    private var dismissedUpdate = 0
     private val chatLock = Mutex()
     private val attempts = ArrayDeque<Long>()
 
@@ -88,6 +102,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val unread: Map<String, Int> = s?.let { chatStore.allUnread(it.userId) } ?: emptyMap()
         val theme = themePrefs.getString("id", "midnight") ?: "midnight"
         _ui.update { it.copy(session = s, booting = false, library = cached, unread = unread, themeId = theme) }
+        checkForUpdate(force = true)
+        checkWhatsNew()
         if (s != null) onSignedIn()
     }
 
@@ -128,6 +144,96 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setTheme(id: String) {
         themePrefs.edit().putString("id", id).apply()
         _ui.update { it.copy(themeId = id) }
+    }
+
+    // ---- app updates: splash on old versions + "what's new" after updating ----
+    fun checkForUpdate(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastUpdateCheck < 30 * 60_000L) return
+        lastUpdateCheck = now
+        viewModelScope.launch {
+            val latest = runCatching { api.latestUpdate() }.getOrNull() ?: return@launch
+            if (latest.versionCode > BuildConfig.VERSION_CODE && latest.versionCode != dismissedUpdate) {
+                _ui.update { it.copy(updatePrompt = latest) }
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        dismissedUpdate = _ui.value.updatePrompt?.versionCode ?: 0
+        _ui.update { it.copy(updatePrompt = null) }
+    }
+
+    private fun checkWhatsNew() {
+        val cur = BuildConfig.VERSION_CODE
+        if (appPrefs.getInt("seen_version", 0) >= cur) return
+        viewModelScope.launch {
+            val u = runCatching { api.updateFor(cur) }.getOrNull()
+            if (u != null) {
+                _ui.update { it.copy(whatsNew = u) }
+            } else {
+                appPrefs.edit().putInt("seen_version", cur).apply()
+            }
+        }
+    }
+
+    fun dismissWhatsNew() {
+        appPrefs.edit().putInt("seen_version", BuildConfig.VERSION_CODE).apply()
+        _ui.update { it.copy(whatsNew = null) }
+    }
+
+    /** Downloads the new APK inside the app, then opens the system installer. */
+    fun startUpdate() {
+        val u = _ui.value.updatePrompt ?: return
+        if (_ui.value.updateProgress != null) return
+        val app = getApplication<Application>()
+        if (!u.apkUrl.startsWith("https://github.com/")) {
+            toast("Invalid update link"); return
+        }
+        if (!app.packageManager.canRequestPackageInstalls()) {
+            toast("Allow Elog to install updates, then tap Update again")
+            app.startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${app.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            return
+        }
+        _ui.update { it.copy(updateProgress = 0f) }
+        launchSafe {
+            try {
+                val f = File(app.cacheDir, "updates/Elog.apk")
+                http.download(u.apkUrl, f) { p -> _ui.update { st -> st.copy(updateProgress = p) } }
+                val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", f)
+                app.startActivity(
+                    Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                )
+            } finally {
+                _ui.update { it.copy(updateProgress = null) }
+            }
+        }
+    }
+
+    // ---- admin ----
+    fun openAdmin() {
+        if (_ui.value.isAdmin) _ui.update { it.copy(adminOpen = true) }
+    }
+
+    fun closeAdmin() {
+        _ui.update { it.copy(adminOpen = false) }
+    }
+
+    fun publishUpdate(versionName: String, notes: String, mandatory: Boolean) {
+        val n = notes.trim()
+        if (n.length < 5) {
+            toast("Write what changed first"); return
+        }
+        val name = versionName.trim().ifBlank { "1.0.${BuildConfig.VERSION_CODE}" }
+        launchSafe {
+            api.publishUpdate(AppUpdate(BuildConfig.VERSION_CODE, name, n, Cfg.DEFAULT_APK_URL, mandatory))
+            toast("Published Elog $name to everyone")
+        }
     }
 
     // ---- auth (with attempt lockout: 5 tries per minute) ----
@@ -185,14 +291,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         searchJob?.cancel()
         userJob?.cancel()
         pollJob?.cancel()
-        _ui.update { UiState(booting = false, themeId = it.themeId, trending = it.trending, topAnime = it.topAnime) }
+        _ui.update {
+            UiState(
+                booting = false,
+                themeId = it.themeId,
+                trending = it.trending,
+                topAnime = it.topAnime,
+                topManga = it.topManga,
+                topTracks = it.topTracks,
+                updatePrompt = it.updatePrompt,
+                whatsNew = it.whatsNew
+            )
+        }
     }
 
     // ---- profile ----
     private fun loadMe() {
         viewModelScope.launch {
             val p = runCatching { api.myProfile() }.getOrNull()
-            if (p != null) _ui.update { it.copy(myUsername = p.username) }
+            if (p != null) _ui.update { it.copy(myUsername = p.username, isAdmin = p.isAdmin) }
         }
     }
 
@@ -275,12 +392,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(trending = t) }
             val a: List<MediaResult> = runCatching { meta.topAnime() }.getOrDefault(emptyList())
             _ui.update { it.copy(topAnime = a) }
+            val m: List<MediaResult> = runCatching { meta.topManga() }.getOrDefault(emptyList())
+            _ui.update { it.copy(topManga = m) }
+            val k: List<MediaResult> = runCatching { meta.topTracks() }.getOrDefault(emptyList())
+            _ui.update { it.copy(topTracks = k) }
         }
     }
 
-    /** Fetches real season/episode counts so the counters can't be tapped past what exists. */
+    /** Fetches real season/episode/chapter counts so the counters can't be tapped past what exists. */
     fun loadLimits(d: Detail) {
-        if (d.type == MediaType.MOVIE) return
+        if (d.type.isSingle) return
         val key = d.type.key + ":" + d.externalId
         if (_ui.value.limits.containsKey(key)) return
         viewModelScope.launch {
@@ -288,7 +409,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (d.type == MediaType.TV) {
                     Limits(seasons = meta.tvmazeSeasons(d.externalId).ifEmpty { null })
                 } else {
-                    Limits(totalEpisodes = d.episodes ?: meta.animeEpisodes(d.externalId))
+                    Limits(totalEpisodes = d.episodes ?: meta.totalFor(d.type, d.externalId))
                 }
             }.getOrNull() ?: return@launch
             _ui.update { it.copy(limits = it.limits + (key to lim)) }
@@ -300,7 +421,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return when (item.type) {
             MediaType.TV -> lim?.seasons?.get(item.season ?: 1) ?: 100
             MediaType.ANIME -> lim?.totalEpisodes ?: 3000
-            MediaType.MOVIE -> 0
+            MediaType.MANGA -> lim?.totalEpisodes ?: 5000
+            MediaType.MOVIE, MediaType.MUSIC -> 0
         }
     }
 
@@ -330,41 +452,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         errors: MutableList<String>,
         onPartial: (List<MediaResult>) -> Unit
     ): List<MediaResult> = coroutineScope {
-        val parts = arrayOfNulls<List<MediaResult>>(3)
+        val types = MediaType.entries
+        val parts = arrayOfNulls<List<MediaResult>>(types.size)
         fun emit() = onPartial(parts.filterNotNull().flatten())
-        val jobs = listOf(
+        val jobs = types.indices.map { i ->
             async {
-                if (f == null || f == MediaType.MOVIE) {
-                    parts[0] = runCatching { meta.searchMovies(q) }
-                        .onFailure { errors += "Movies: ${it.message}" }
-                        .getOrDefault(emptyList())
-                    emit()
-                }
-            },
-            async {
-                if (f == null || f == MediaType.TV) {
-                    parts[1] = runCatching { meta.searchShows(q) }
-                        .onFailure { errors += "Shows: ${it.message}" }
-                        .getOrDefault(emptyList())
-                    emit()
-                }
-            },
-            async {
-                if (f == null || f == MediaType.ANIME) {
-                    parts[2] = runCatching { meta.searchAnime(q) }
-                        .onFailure { errors += "Anime: ${it.message}" }
-                        .getOrDefault(emptyList())
+                val t = types[i]
+                if (f == null || f == t) {
+                    parts[i] = runCatching {
+                        when (t) {
+                            MediaType.MOVIE -> meta.searchMovies(q)
+                            MediaType.TV -> meta.searchShows(q)
+                            MediaType.ANIME -> meta.searchAnime(q)
+                            MediaType.MANGA -> meta.searchManga(q)
+                            MediaType.MUSIC -> meta.searchMusic(q)
+                        }
+                    }.onFailure { errors += "${t.plural}: ${it.message}" }.getOrDefault(emptyList())
                     emit()
                 }
             }
-        )
+        }
         jobs.awaitAll()
         parts.filterNotNull().flatten()
     }
 
     private fun localTitles(): List<String> {
         val st = _ui.value
-        return st.library.map { it.title } + st.trending.map { it.title } + st.topAnime.map { it.title }
+        return st.library.map { it.title } + st.trending.map { it.title } +
+            st.topAnime.map { it.title } + st.topManga.map { it.title } + st.topTracks.map { it.title }
     }
 
     private suspend fun runSearch(q: String, f: MediaType?) {
@@ -435,11 +550,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** +1 episode: the list updates instantly, then syncs (and rolls back if it fails). */
+    /** +1 episode / chapter: the list updates instantly, then syncs (and rolls back if it fails). */
     fun bumpEpisode(item: LibraryItem) {
         val next = (item.episode ?: 0) + 1
         if (next > maxEpisodeFor(item)) {
-            toast("That's the last episode"); return
+            toast(if (item.type == MediaType.MANGA) "That's the last chapter" else "That's the last episode"); return
         }
         replaceLocal(item.copy(episode = next))
         launchSafe {
@@ -562,7 +677,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- chat: history lives on the device; the server only holds a message until it's downloaded ----
     fun setForeground(f: Boolean) {
         foreground = f
-        if (f) startPolling() else pollJob?.cancel()
+        if (f) {
+            startPolling()
+            checkForUpdate()
+        } else {
+            pollJob?.cancel()
+        }
     }
 
     private fun startPolling() {

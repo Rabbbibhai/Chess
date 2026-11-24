@@ -25,6 +25,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -55,7 +56,7 @@ fun App(vm: AppViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val scheme = MaterialTheme.colorScheme
 
-    // Only check for new messages while the app is on screen.
+    // Only check for new messages / updates while the app is on screen.
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) vm.setForeground(true)
@@ -72,30 +73,63 @@ fun App(vm: AppViewModel) {
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(scheme.background)
-            // soft theme-colored glow at the top of every screen
-            .background(
-                Brush.verticalGradient(
-                    0f to scheme.primaryContainer.copy(alpha = 0.30f),
-                    0.45f to Color.Transparent
-                )
-            )
-    ) {
-        when {
-            ui.booting -> Unit
-            ui.session == null -> LoginScreen(busy = ui.authBusy, onSubmit = { e, p, up -> vm.authenticate(e, p, up) })
-            else -> MainScaffold(vm, ui)
-        }
-        SnackbarHost(
-            snackbar,
+    // Surface gives every Text the right default color (this is what fixes unreadable headers).
+    Surface(color = scheme.background, contentColor = scheme.onBackground, modifier = Modifier.fillMaxSize()) {
+        Box(
             Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 88.dp)
-        )
+                .fillMaxSize()
+                // soft theme-colored glow at the top of every screen
+                .background(
+                    Brush.verticalGradient(
+                        0f to scheme.primaryContainer.copy(alpha = 0.30f),
+                        0.45f to Color.Transparent
+                    )
+                )
+        ) {
+            when {
+                ui.booting -> Unit
+                ui.session == null -> LoginScreen(busy = ui.authBusy, onSubmit = { e, p, up -> vm.authenticate(e, p, up) })
+                else -> MainScaffold(vm, ui)
+            }
+
+            if (ui.adminOpen && ui.isAdmin) {
+                BackHandler { vm.closeAdmin() }
+                AdminScreen(
+                    onBack = { vm.closeAdmin() },
+                    onPublish = { n, notes, force -> vm.publishUpdate(n, notes, force) }
+                )
+            }
+
+            // Update splash (newer version exists) or one-time "What's new" after updating.
+            val prompt = ui.updatePrompt
+            val news = ui.whatsNew
+            if (prompt != null) {
+                BackHandler(enabled = prompt.mandatory) { }
+                UpdateOverlay(
+                    update = prompt,
+                    isNewVersion = true,
+                    progress = ui.updateProgress,
+                    onUpdate = { vm.startUpdate() },
+                    onDismiss = { vm.dismissUpdate() }
+                )
+            } else if (news != null && !ui.booting) {
+                UpdateOverlay(
+                    update = news,
+                    isNewVersion = false,
+                    progress = null,
+                    onUpdate = { },
+                    onDismiss = { vm.dismissWhatsNew() }
+                )
+            }
+
+            SnackbarHost(
+                snackbar,
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 88.dp)
+            )
+        }
     }
 }
 
@@ -119,6 +153,7 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         bottomBar = {
             if (!chatOpen) {
                 NavigationBar(
@@ -225,6 +260,7 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                     },
                     onEditProfile = { n, u -> vm.editProfile(n, u) },
                     onTheme = { vm.setTheme(it) },
+                    onOpenAdmin = { vm.openAdmin() },
                     modifier = m
                 )
             }

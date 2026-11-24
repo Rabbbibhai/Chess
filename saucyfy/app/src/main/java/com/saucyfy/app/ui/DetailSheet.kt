@@ -44,6 +44,8 @@ import com.saucyfy.app.data.LibraryItem
 import com.saucyfy.app.data.Limits
 import com.saucyfy.app.data.MediaType
 import com.saucyfy.app.data.Status
+import com.saucyfy.app.data.isSingle
+import com.saucyfy.app.data.labelFor
 import com.saucyfy.app.data.statusEnum
 import kotlin.math.roundToInt
 
@@ -57,25 +59,27 @@ fun DetailSheet(
     onSave: (Status, Int?, Int?, Int?, String?) -> Unit,
     onRemove: () -> Unit
 ) {
+    val type = d.type
+    val single = type.isSingle
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var status by remember { mutableStateOf(existing?.statusEnum ?: Status.WATCHED) }
     var rating by remember { mutableIntStateOf(existing?.rating ?: 0) }
-    var season by remember { mutableIntStateOf(existing?.season ?: 1) }
+    var season by remember { mutableIntStateOf(if (type == MediaType.TV) existing?.season ?: 1 else 1) }
+    var volume by remember { mutableIntStateOf(if (type == MediaType.MANGA) existing?.season ?: 0 else 0) }
     var episode by remember { mutableIntStateOf(existing?.episode ?: 0) }
     var notes by remember { mutableStateOf(existing?.notes ?: "") }
-    val isMovie = d.type == MediaType.MOVIE
-    val hasProgress = !isMovie
 
     // Real limits when we know them, sane ceilings while they load.
     val maxSeason = limits?.seasons?.keys?.maxOrNull() ?: 40
-    fun epMax(s: Int): Int = when (d.type) {
+    fun epMax(s: Int): Int = when (type) {
         MediaType.TV -> limits?.seasons?.get(s) ?: 100
         MediaType.ANIME -> limits?.totalEpisodes ?: 3000
-        MediaType.MOVIE -> 0
+        MediaType.MANGA -> limits?.totalEpisodes ?: 5000
+        MediaType.MOVIE, MediaType.MUSIC -> 0
     }
-    val knownEp = (d.type == MediaType.TV && limits?.seasons != null) ||
-        (d.type == MediaType.ANIME && limits?.totalEpisodes != null)
-    val knownSeason = d.type == MediaType.TV && limits?.seasons != null
+    val knownEp = (type == MediaType.TV && limits?.seasons != null) ||
+        ((type == MediaType.ANIME || type == MediaType.MANGA) && limits?.totalEpisodes != null)
+    val knownSeason = type == MediaType.TV && limits?.seasons != null
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -92,13 +96,17 @@ fun DetailSheet(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Box {
-                    Poster(d.posterUrl, Modifier.width(104.dp).height(156.dp))
+                    Poster(
+                        d.posterUrl,
+                        Modifier.width(if (type == MediaType.MUSIC) 120.dp else 104.dp)
+                            .height(if (type == MediaType.MUSIC) 120.dp else 156.dp)
+                    )
                     ScoreBadge(d.score, Modifier.align(Alignment.BottomStart).padding(5.dp))
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(d.title, style = MaterialTheme.typography.titleLarge)
                     Text(
-                        listOf(d.type.label, d.year).filter { it.isNotBlank() }.joinToString(" • "),
+                        listOf(type.label, d.year).filter { it.isNotBlank() }.joinToString(" • "),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -114,12 +122,12 @@ fun DetailSheet(
                 }
             }
 
-            if (!isMovie) {
+            if (!single) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Status", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Status.entries.forEach { s ->
-                            FilterChip(selected = status == s, onClick = { status = s }, label = { Text(s.label) })
+                            FilterChip(selected = status == s, onClick = { status = s }, label = { Text(s.labelFor(type)) })
                         }
                     }
                 }
@@ -147,8 +155,8 @@ fun DetailSheet(
                 )
             }
 
-            if (isMovie) {
-                // Movies: one tap, no status picker.
+            if (single) {
+                // Movies and songs: one tap, no status picker.
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "Add to your list",
@@ -166,18 +174,18 @@ fun DetailSheet(
                                     onClick = go,
                                     shape = RoundedCornerShape(16.dp),
                                     modifier = Modifier.weight(1f).height(52.dp)
-                                ) { Text("✓ " + s.label, fontWeight = FontWeight.SemiBold) }
+                                ) { Text("✓ " + s.labelFor(type), fontWeight = FontWeight.SemiBold) }
                             } else {
                                 OutlinedButton(
                                     onClick = go,
                                     shape = RoundedCornerShape(16.dp),
                                     modifier = Modifier.weight(1f).height(52.dp)
-                                ) { Text(s.label, fontWeight = FontWeight.SemiBold) }
+                                ) { Text(s.labelFor(type), fontWeight = FontWeight.SemiBold) }
                             }
                         }
                     }
                 }
-            } else if (hasProgress) {
+            } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "Left off at",
@@ -185,15 +193,22 @@ fun DetailSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                        if (d.type == MediaType.TV) {
+                        if (type == MediaType.TV) {
                             Stepper("Season", season.coerceAtMost(maxSeason), 1, maxSeason, knownSeason) {
                                 season = it
                                 episode = minOf(episode, epMax(it))
                             }
                         }
-                        Stepper("Episode", episode.coerceAtMost(epMax(season)), 0, epMax(season), knownEp) {
-                            episode = it
+                        if (type == MediaType.MANGA) {
+                            Stepper("Volume", volume, 0, 300, false) { volume = it }
                         }
+                        Stepper(
+                            if (type == MediaType.MANGA) "Chapter" else "Episode",
+                            episode.coerceAtMost(epMax(season)),
+                            0,
+                            epMax(season),
+                            knownEp
+                        ) { episode = it }
                     }
                 }
             }
@@ -208,25 +223,30 @@ fun DetailSheet(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            if (existing != null || !isMovie) {
+            if (existing != null || !single) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (existing != null) {
                         OutlinedButton(
                             onClick = onRemove,
                             shape = RoundedCornerShape(16.dp),
-                            modifier = if (isMovie) Modifier.weight(1f).height(52.dp) else Modifier.height(52.dp)
+                            modifier = if (single) Modifier.weight(1f).height(52.dp) else Modifier.height(52.dp)
                         ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
                     }
-                    if (!isMovie) {
+                    if (!single) {
                         Button(
                             onClick = {
                                 val s = season.coerceIn(1, maxSeason)
                                 val e = episode.coerceIn(0, epMax(s))
+                                val seasonOrVolume: Int? = when (type) {
+                                    MediaType.TV -> s
+                                    MediaType.MANGA -> volume.takeIf { it > 0 }
+                                    else -> null
+                                }
                                 onSave(
                                     status,
                                     rating.takeIf { it > 0 },
-                                    if (d.type == MediaType.TV) s else null,
-                                    if (hasProgress && e > 0) e else null,
+                                    seasonOrVolume,
+                                    if (e > 0) e else null,
                                     notes.trim().ifBlank { null }
                                 )
                             },
