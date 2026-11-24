@@ -8,7 +8,8 @@ data class Profile(
     val id: String,
     val username: String,
     @SerialName("display_name") val displayName: String? = null,
-    @SerialName("avatar_url") val avatarUrl: String? = null
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+    @SerialName("is_admin") val isAdmin: Boolean = false
 )
 
 val Profile.shownName: String get() = displayName?.takeIf { it.isNotBlank() } ?: username
@@ -27,6 +28,16 @@ data class FriendEntry(
     val profile: Profile,
     val accepted: Boolean,
     val incoming: Boolean // true = they asked you
+)
+
+/** A published app version + its "what's new" notes (one change per line). */
+@Serializable
+data class AppUpdate(
+    @SerialName("version_code") val versionCode: Int,
+    @SerialName("version_name") val versionName: String,
+    val notes: String,
+    @SerialName("apk_url") val apkUrl: String,
+    val mandatory: Boolean = false
 )
 
 /** Edit distance between two strings. */

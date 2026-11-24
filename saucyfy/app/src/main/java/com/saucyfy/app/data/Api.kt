@@ -32,6 +32,8 @@ object Cfg {
     val supabaseUrl: String = BuildConfig.SUPABASE_URL.trim().trimEnd('/')
     val anonKey: String = BuildConfig.SUPABASE_ANON_KEY.trim()
     const val REDIRECT = "saucyfy://login-callback"
+    /** Always points at the newest release's APK. */
+    const val DEFAULT_APK_URL = "https://github.com/Rabbbibhai/Chess/releases/latest/download/Elog.apk"
     val configured: Boolean get() = supabaseUrl.isNotBlank() && anonKey.isNotBlank()
 }
 
@@ -74,8 +76,41 @@ class Http(cacheDir: File? = null) {
         }
         .build()
 
+    // big downloads (app updates): no cache, longer timeout
+    private val downloader = client.newBuilder().cache(null).readTimeout(90, TimeUnit.SECONDS).build()
+
     suspend fun call(req: Request): Pair<Int, String> = withContext(Dispatchers.IO) {
         client.newCall(req).execute().use { r -> r.code to (r.body?.string() ?: "") }
+    }
+
+    /** Streams [url] into [dest], reporting progress 0..1. */
+    suspend fun download(url: String, dest: File, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
+        downloader.newCall(Request.Builder().url(url).build()).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("Download failed (${r.code}). Is the release published?")
+            val body = r.body ?: throw IOException("Empty download")
+            val total = body.contentLength()
+            dest.parentFile?.mkdirs()
+            dest.outputStream().use { out ->
+                body.byteStream().use { input ->
+                    val buf = ByteArray(32 * 1024)
+                    var done = 0L
+                    var last = -1
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        if (total > 0) {
+                            val pct = (done * 100 / total).toInt()
+                            if (pct != last) {
+                                last = pct
+                                onProgress(pct / 100f)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -124,6 +159,7 @@ private fun errMsg(code: Int, body: String): String {
         raw.contains("friendships", ignoreCase = true) && raw.contains("duplicate", ignoreCase = true) ->
             "You already have a request with this person"
         raw.contains("rate limit", ignoreCase = true) -> "Rate limit reached. Please try again later."
+        raw.contains("row-level security", ignoreCase = true) -> "You don't have permission to do that"
         raw.isNotBlank() -> raw.replaceFirstChar { it.uppercase() }
         code == 429 -> "Too many requests. Please wait a bit and try again."
         else -> "Request failed ($code)"
@@ -261,6 +297,37 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
 
     private fun myId(): String = (store.get() ?: throw AuthExpired()).userId
 
+    // ---- app updates (readable without signing in) ----
+    private fun publicGet(path: String): Request =
+        Request.Builder().url("$base/rest/v1/$path")
+            .header("apikey", Cfg.anonKey)
+            .header("Authorization", "Bearer ${Cfg.anonKey}")
+            .build()
+
+    suspend fun latestUpdate(): AppUpdate? {
+        val (code, body) = http.call(publicGet("app_updates?select=*&order=version_code.desc&limit=1"))
+        if (code !in 200..299) return null
+        return JSON.decodeFromString(ListSerializer(AppUpdate.serializer()), body).firstOrNull()
+    }
+
+    suspend fun updateFor(versionCode: Int): AppUpdate? {
+        val (code, body) = http.call(publicGet("app_updates?select=*&version_code=eq.$versionCode&limit=1"))
+        if (code !in 200..299) return null
+        return JSON.decodeFromString(ListSerializer(AppUpdate.serializer()), body).firstOrNull()
+    }
+
+    /** Admin only (enforced by the database). Re-publishing the same version edits its notes. */
+    suspend fun publishUpdate(u: AppUpdate) {
+        val json = JSON.encodeToString(AppUpdate.serializer(), u)
+        val (code, body) = authed { t ->
+            rest("app_updates?on_conflict=version_code", t)
+                .header("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(json.toRequestBody(JSON_MT))
+                .build()
+        }
+        if (code !in 200..299) throw IOException(errMsg(code, body))
+    }
+
     // ---- profile ----
     suspend fun updateProfile(name: String?, avatarUrl: String?): Session {
         val data = buildJsonObject {
@@ -305,7 +372,7 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
 
     suspend fun myProfile(): Profile? {
         val me = myId()
-        val (code, body) = authed { t -> rest("profiles?select=$profileCols&id=eq.$me", t).build() }
+        val (code, body) = authed { t -> rest("profiles?select=$profileCols,is_admin&id=eq.$me", t).build() }
         if (code !in 200..299) return null
         return JSON.decodeFromString(ListSerializer(Profile.serializer()), body).firstOrNull()
     }
@@ -455,9 +522,10 @@ class SupabaseApi(private val http: Http, private val store: SessionStore) {
 
 /**
  * Public, key-free metadata with per-host rate limiting, a result cache and fallbacks:
- *  - Movies: Cinemeta (IMDb)   -> fallback Apple iTunes
+ *  - Movies: Cinemeta (IMDb)      -> fallback Apple iTunes
  *  - Shows:  TVMaze
- *  - Anime:  Jikan (MyAnimeList) -> fallback Kitsu
+ *  - Anime / Manga: Jikan (MyAnimeList) -> fallback Kitsu
+ *  - Music:  iTunes               -> fallback Deezer
  *  - Spelling suggestions: Wikipedia search
  *  - Reaction GIFs: nekos.best
  */
@@ -471,6 +539,7 @@ class MetadataApi(private val http: Http) {
     private val tvmazeLimit = RateLimiter(400)
     private val jikanLimit = RateLimiter(450)
     private val kitsuLimit = RateLimiter(300)
+    private val deezerLimit = RateLimiter(300)
     private val wikiLimit = RateLimiter(400)
     private val gifLimit = RateLimiter(300)
     private val cache = ConcurrentHashMap<String, List<MediaResult>>()
@@ -480,7 +549,7 @@ class MetadataApi(private val http: Http) {
         cache[key]?.let { return it }
         val v = load()
         if (v.isNotEmpty()) {
-            if (cache.size > 80) cache.clear()
+            if (cache.size > 100) cache.clear()
             cache[key] = v
         }
         return v
@@ -521,9 +590,21 @@ class MetadataApi(private val http: Http) {
     suspend fun searchAnime(q: String): List<MediaResult> = cached("a|${q.lowercase()}") {
         firstNonEmpty(
             "Anime",
-            { jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true")) },
-            { kitsuSearch(q) }
+            { jikan("anime", mapOf("q" to q, "limit" to "20", "sfw" to "true"), MediaType.ANIME) },
+            { kitsuSearch(q, MediaType.ANIME) }
         )
+    }
+
+    suspend fun searchManga(q: String): List<MediaResult> = cached("g|${q.lowercase()}") {
+        firstNonEmpty(
+            "Manga",
+            { jikan("manga", mapOf("q" to q, "limit" to "20", "sfw" to "true"), MediaType.MANGA) },
+            { kitsuSearch(q, MediaType.MANGA) }
+        )
+    }
+
+    suspend fun searchMusic(q: String): List<MediaResult> = cached("u|${q.lowercase()}") {
+        firstNonEmpty("Music", { itunesMusic(q) }, { deezerSearch(q) })
     }
 
     /** Discover row: popular movies + shows airing today. */
@@ -537,10 +618,22 @@ class MetadataApi(private val http: Http) {
     }
 
     suspend fun topAnime(): List<MediaResult> {
-        val a = runCatching { jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true")) }.getOrNull()
+        val a = runCatching {
+            jikan("top/anime", mapOf("filter" to "airing", "limit" to "20", "sfw" to "true"), MediaType.ANIME)
+        }.getOrNull()
         if (!a.isNullOrEmpty()) return a
-        return runCatching { kitsuTop() }.getOrDefault(emptyList())
+        return runCatching { kitsuTop(MediaType.ANIME) }.getOrDefault(emptyList())
     }
+
+    suspend fun topManga(): List<MediaResult> {
+        val a = runCatching {
+            jikan("top/manga", mapOf("filter" to "publishing", "limit" to "20", "sfw" to "true"), MediaType.MANGA)
+        }.getOrNull()
+        if (!a.isNullOrEmpty()) return a
+        return runCatching { kitsuTop(MediaType.MANGA) }.getOrDefault(emptyList())
+    }
+
+    suspend fun topTracks(): List<MediaResult> = runCatching { deezerChart() }.getOrDefault(emptyList())
 
     /** "Did you mean ...?" from Wikipedia's spelling correction. */
     suspend fun suggest(q: String): String? {
@@ -577,7 +670,7 @@ class MetadataApi(private val http: Http) {
         return out
     }
 
-    // ---- real season / episode limits ----
+    // ---- real season / episode / chapter limits ----
     /** season number -> number of episodes, from TVMaze. */
     suspend fun tvmazeSeasons(showId: String): Map<Int, Int> {
         val url = HttpUrl.Builder().scheme("https").host("api.tvmaze.com")
@@ -592,20 +685,22 @@ class MetadataApi(private val http: Http) {
         return counts
     }
 
-    /** Total episodes of an anime (null while it is still airing / unknown). */
-    suspend fun animeEpisodes(id: String): Int? {
+    /** Total episodes (anime) or chapters (manga); null while still running / unknown. */
+    suspend fun totalFor(type: MediaType, id: String): Int? {
+        val manga = type == MediaType.MANGA
         if (id.startsWith("k")) {
             val url = HttpUrl.Builder().scheme("https").host("kitsu.io")
-                .addPathSegments("api/edge/anime/${id.drop(1)}")
+                .addPathSegments("api/edge/${if (manga) "manga" else "anime"}/${id.drop(1)}")
                 .build()
-            val data = JSON.parseToJsonElement(getJson(url, "Anime", kitsuLimit, kitsuAccept)).jsonObject["data"] as? JsonObject
-            return (data?.get("attributes") as? JsonObject)?.str("episodeCount")?.toIntOrNull()
+            val data = JSON.parseToJsonElement(getJson(url, "Details", kitsuLimit, kitsuAccept)).jsonObject["data"] as? JsonObject
+            val key = if (manga) "chapterCount" else "episodeCount"
+            return (data?.get("attributes") as? JsonObject)?.str(key)?.toIntOrNull()
         }
         val url = HttpUrl.Builder().scheme("https").host("api.jikan.moe")
-            .addPathSegments("v4/anime/$id")
+            .addPathSegments("v4/${if (manga) "manga" else "anime"}/$id")
             .build()
-        val data = JSON.parseToJsonElement(getJson(url, "Anime", jikanLimit)).jsonObject["data"] as? JsonObject
-        return data?.str("episodes")?.toIntOrNull()
+        val data = JSON.parseToJsonElement(getJson(url, "Details", jikanLimit)).jsonObject["data"] as? JsonObject
+        return data?.str(if (manga) "chapters" else "episodes")?.toIntOrNull()
     }
 
     // ---- Cinemeta (movies, IMDb ids) ----
@@ -642,7 +737,7 @@ class MetadataApi(private val http: Http) {
         return cinemetaMetas(getJson(url, "Popular movies", cinemetaLimit)).take(20)
     }
 
-    // ---- iTunes (movies fallback) ----
+    // ---- iTunes (movies fallback + music) ----
     private suspend fun itunesMovies(q: String): List<MediaResult> {
         val url = HttpUrl.Builder().scheme("https").host("itunes.apple.com").addPathSegment("search")
             .addQueryParameter("term", q)
@@ -663,6 +758,31 @@ class MetadataApi(private val http: Http) {
                 year = (o.str("releaseDate") ?: "").take(4),
                 posterUrl = o.str("artworkUrl100")?.replace(sizeRegex, "400x600bb"),
                 overview = o.str("longDescription") ?: o.str("shortDescription") ?: "",
+                score = null
+            )
+        }
+    }
+
+    private suspend fun itunesMusic(q: String): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("itunes.apple.com").addPathSegment("search")
+            .addQueryParameter("term", q)
+            .addQueryParameter("media", "music")
+            .addQueryParameter("entity", "song")
+            .addQueryParameter("limit", "20")
+            .build()
+        val arr = JSON.parseToJsonElement(getJson(url, "Music search", itunesLimit)).jsonObject["results"] as? JsonArray
+            ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o.str("trackId") ?: return@mapNotNull null
+            val title = o.str("trackName") ?: return@mapNotNull null
+            MediaResult(
+                externalId = id,
+                type = MediaType.MUSIC,
+                title = title,
+                year = (o.str("releaseDate") ?: "").take(4),
+                posterUrl = o.str("artworkUrl100")?.replace(sizeRegex, "400x400bb"),
+                overview = listOfNotNull(o.str("artistName"), o.str("collectionName")).joinToString(" · "),
                 score = null
             )
         }
@@ -692,6 +812,44 @@ class MetadataApi(private val http: Http) {
                 score = null
             )
         }
+    }
+
+    // ---- Deezer (music fallback + chart; ids are prefixed with "d") ----
+    private fun deezerTracks(body: String): List<MediaResult> {
+        val arr = JSON.parseToJsonElement(body).jsonObject["data"] as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o.str("id") ?: return@mapNotNull null
+            val title = o.str("title") ?: return@mapNotNull null
+            val album = o["album"] as? JsonObject
+            val artist = (o["artist"] as? JsonObject)?.str("name")
+            MediaResult(
+                externalId = "d$id",
+                type = MediaType.MUSIC,
+                title = title,
+                year = "",
+                posterUrl = album?.str("cover_big") ?: album?.str("cover_medium"),
+                overview = listOfNotNull(artist, album?.str("title")).joinToString(" · "),
+                score = null
+            )
+        }
+    }
+
+    private suspend fun deezerSearch(q: String): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("api.deezer.com")
+            .addPathSegments("search/track")
+            .addQueryParameter("q", q)
+            .addQueryParameter("limit", "20")
+            .build()
+        return deezerTracks(getJson(url, "Music search", deezerLimit))
+    }
+
+    private suspend fun deezerChart(): List<MediaResult> {
+        val url = HttpUrl.Builder().scheme("https").host("api.deezer.com")
+            .addPathSegments("chart/0/tracks")
+            .addQueryParameter("limit", "20")
+            .build()
+        return deezerTracks(getJson(url, "Top tracks", deezerLimit))
     }
 
     // ---- TVMaze (shows) ----
@@ -734,8 +892,8 @@ class MetadataApi(private val http: Http) {
         }.filter { it.posterUrl != null }.distinctBy { it.externalId }.take(20)
     }
 
-    // ---- Jikan (anime) ----
-    private suspend fun jikan(path: String, params: Map<String, String>): List<MediaResult> {
+    // ---- Jikan (anime + manga) ----
+    private suspend fun jikan(path: String, params: Map<String, String>, type: MediaType): List<MediaResult> {
         val url = HttpUrl.Builder().scheme("https").host("api.jikan.moe")
             .addPathSegments("v4/$path")
             .apply { params.forEach { (k, v) -> addQueryParameter(k, v) } }
@@ -747,30 +905,33 @@ class MetadataApi(private val http: Http) {
             jikanLimit.acquire()
             res = http.call(Request.Builder().url(url).build())
         }
-        if (res.first !in 200..299) throw IOException("Anime HTTP ${res.first}")
+        if (res.first !in 200..299) throw IOException("${type.label} HTTP ${res.first}")
         val arr = JSON.parseToJsonElement(res.second).jsonObject["data"] as? JsonArray ?: return emptyList()
+        val countKey = if (type == MediaType.MANGA) "chapters" else "episodes"
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o.str("mal_id") ?: return@mapNotNull null
             val title = o.str("title_english") ?: o.str("title") ?: return@mapNotNull null
             val jpg = (o["images"] as? JsonObject)?.get("jpg") as? JsonObject
-            val year = o.str("year") ?: (o["aired"] as? JsonObject)?.str("from")?.take(4) ?: ""
+            val span = (o["aired"] ?: o["published"]) as? JsonObject
+            val year = o.str("year") ?: span?.str("from")?.take(4) ?: ""
             MediaResult(
                 externalId = id,
-                type = MediaType.ANIME,
+                type = type,
                 title = title,
                 year = year,
                 posterUrl = jpg?.str("large_image_url") ?: jpg?.str("image_url"),
                 overview = o.str("synopsis") ?: "",
                 score = o.str("score")?.toDoubleOrNull(),
-                episodes = o.str("episodes")?.toIntOrNull()
+                episodes = o.str(countKey)?.toIntOrNull()
             )
         }
     }
 
-    // ---- Kitsu (anime fallback, ids are prefixed with "k") ----
-    private fun kitsuItems(body: String): List<MediaResult> {
+    // ---- Kitsu (anime / manga fallback, ids are prefixed with "k") ----
+    private fun kitsuItems(body: String, type: MediaType): List<MediaResult> {
         val arr = JSON.parseToJsonElement(body).jsonObject["data"] as? JsonArray ?: return emptyList()
+        val countKey = if (type == MediaType.MANGA) "chapterCount" else "episodeCount"
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o.str("id") ?: return@mapNotNull null
@@ -779,33 +940,33 @@ class MetadataApi(private val http: Http) {
             val poster = a["posterImage"] as? JsonObject
             MediaResult(
                 externalId = "k$id",
-                type = MediaType.ANIME,
+                type = type,
                 title = title,
                 year = (a.str("startDate") ?: "").take(4),
                 posterUrl = poster?.str("medium") ?: poster?.str("small"),
                 overview = a.str("synopsis") ?: "",
                 score = a.str("averageRating")?.toDoubleOrNull()?.div(10),
-                episodes = a.str("episodeCount")?.toIntOrNull()
+                episodes = a.str(countKey)?.toIntOrNull()
             )
         }
     }
 
-    private suspend fun kitsuSearch(q: String): List<MediaResult> {
+    private suspend fun kitsuSearch(q: String, type: MediaType): List<MediaResult> {
         val url = HttpUrl.Builder().scheme("https").host("kitsu.io")
-            .addPathSegments("api/edge/anime")
+            .addPathSegments("api/edge/${if (type == MediaType.MANGA) "manga" else "anime"}")
             .addQueryParameter("filter[text]", q)
             .addQueryParameter("page[limit]", "20")
             .build()
-        return kitsuItems(getJson(url, "Anime search", kitsuLimit, kitsuAccept))
+        return kitsuItems(getJson(url, "${type.label} search", kitsuLimit, kitsuAccept), type)
     }
 
-    private suspend fun kitsuTop(): List<MediaResult> {
+    private suspend fun kitsuTop(type: MediaType): List<MediaResult> {
         val url = HttpUrl.Builder().scheme("https").host("kitsu.io")
-            .addPathSegments("api/edge/anime")
+            .addPathSegments("api/edge/${if (type == MediaType.MANGA) "manga" else "anime"}")
             .addQueryParameter("filter[status]", "current")
             .addQueryParameter("sort", "-userCount")
             .addQueryParameter("page[limit]", "20")
             .build()
-        return kitsuItems(getJson(url, "Top anime", kitsuLimit, kitsuAccept))
+        return kitsuItems(getJson(url, "Top ${type.label}", kitsuLimit, kitsuAccept), type)
     }
 }

@@ -23,7 +23,14 @@ object Brand {
     val Coral = Color(0xFFFF7A7A)
 }
 
-class AppTheme(val id: String, val name: String, val dark: Boolean, val scheme: ColorScheme)
+/** [header] is the color of screen titles and section headings: a soft tint picked per theme. */
+class AppTheme(
+    val id: String,
+    val name: String,
+    val dark: Boolean,
+    val scheme: ColorScheme,
+    val header: Color
+)
 
 private fun darkTheme(
     id: String,
@@ -33,6 +40,7 @@ private fun darkTheme(
     primary: Long,
     secondary: Long,
     primaryContainer: Long,
+    header: Long,
     onPrimary: Long = 0xFF08111F
 ): AppTheme {
     val c = Color(card)
@@ -57,18 +65,19 @@ private fun darkTheme(
             surfaceContainer = c,
             surfaceContainerHigh = lerp(c, Color.White, 0.04f),
             surfaceContainerHighest = lerp(c, Color.White, 0.08f)
-        )
+        ),
+        Color(header)
     )
 }
 
 object Themes {
     val all: List<AppTheme> = listOf(
-        darkTheme("midnight", "Midnight", 0xFF0A0F1C, 0xFF131B2C, 0xFF4DB2FF, 0xFF8BE05B, 0xFF12365A),
-        darkTheme("amoled", "AMOLED", 0xFF000000, 0xFF0F0F10, 0xFF7CC4FF, 0xFF8BE05B, 0xFF123049),
-        darkTheme("ocean", "Ocean", 0xFF06141F, 0xFF0D2233, 0xFF2DD4BF, 0xFF38BDF8, 0xFF0F4C4A),
-        darkTheme("forest", "Forest", 0xFF08140D, 0xFF11261A, 0xFF4ADE80, 0xFFA3E635, 0xFF14532D),
-        darkTheme("sunset", "Sunset", 0xFF1A0F14, 0xFF2A1820, 0xFFFB923C, 0xFFF472B6, 0xFF6B3410, 0xFF2A1200),
-        darkTheme("sakura", "Sakura", 0xFF1A0E17, 0xFF2A1726, 0xFFF9A8D4, 0xFFC4B5FD, 0xFF6B2A52, 0xFF2A0E1E),
+        darkTheme("midnight", "Midnight", 0xFF0A0F1C, 0xFF131B2C, 0xFF4DB2FF, 0xFF8BE05B, 0xFF12365A, 0xFFA9D2FF),
+        darkTheme("amoled", "AMOLED", 0xFF000000, 0xFF0F0F10, 0xFF7CC4FF, 0xFF8BE05B, 0xFF123049, 0xFFFFFFFF),
+        darkTheme("ocean", "Ocean", 0xFF06141F, 0xFF0D2233, 0xFF2DD4BF, 0xFF38BDF8, 0xFF0F4C4A, 0xFF8DEBDD),
+        darkTheme("forest", "Forest", 0xFF08140D, 0xFF11261A, 0xFF4ADE80, 0xFFA3E635, 0xFF14532D, 0xFFB4EBC2),
+        darkTheme("sunset", "Sunset", 0xFF1A0F14, 0xFF2A1820, 0xFFFB923C, 0xFFF472B6, 0xFF6B3410, 0xFFFFCBA4, 0xFF2A1200),
+        darkTheme("sakura", "Sakura", 0xFF1A0E17, 0xFF2A1726, 0xFFF9A8D4, 0xFFC4B5FD, 0xFF6B2A52, 0xFFFBC4DE, 0xFF2A0E1E),
         AppTheme(
             "daylight", "Daylight", false,
             lightColorScheme(
@@ -89,18 +98,19 @@ object Themes {
                 surfaceContainer = Color(0xFFEEF2F9),
                 surfaceContainerHigh = Color(0xFFE8EDF6),
                 surfaceContainerHighest = Color(0xFFE1E7F2)
-            )
+            ),
+            Color(0xFF0B2A52)
         )
     )
 }
 
 fun themeById(id: String): AppTheme = Themes.all.firstOrNull { it.id == id } ?: Themes.all.first()
 
-// Bolder headings, rounder shapes: gives the whole app a more polished, modern feel.
-private val AppTypography = Typography(
-    headlineLarge = TextStyle(fontWeight = FontWeight.ExtraBold, fontSize = 32.sp, letterSpacing = (-0.5).sp),
-    headlineMedium = TextStyle(fontWeight = FontWeight.ExtraBold, fontSize = 28.sp, letterSpacing = (-0.5).sp),
-    titleLarge = TextStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp),
+// Bolder headings in the theme's header color, rounder shapes.
+private fun appTypography(header: Color) = Typography(
+    headlineLarge = TextStyle(color = header, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp, letterSpacing = (-0.5).sp),
+    headlineMedium = TextStyle(color = header, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp, letterSpacing = (-0.5).sp),
+    titleLarge = TextStyle(color = header, fontWeight = FontWeight.Bold, fontSize = 22.sp),
     titleMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 16.sp, letterSpacing = 0.1.sp),
     titleSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 14.sp, letterSpacing = 0.2.sp),
     labelLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 14.sp, letterSpacing = 0.1.sp),
@@ -118,9 +128,10 @@ private val AppShapes = Shapes(
 
 @Composable
 fun SaucyfyTheme(themeId: String, content: @Composable () -> Unit) {
+    val t = themeById(themeId)
     MaterialTheme(
-        colorScheme = themeById(themeId).scheme,
-        typography = AppTypography,
+        colorScheme = t.scheme,
+        typography = appTypography(t.header),
         shapes = AppShapes,
         content = content
     )

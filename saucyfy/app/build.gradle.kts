@@ -8,6 +8,7 @@ plugins {
 fun env(name: String): String = (System.getenv(name) ?: "").trim()
 
 val runNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toIntOrNull() ?: 1
+val elogKeystore = rootProject.file("keystore/elog.jks")
 
 android {
     namespace = "com.saucyfy.app"
@@ -30,6 +31,18 @@ android {
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnon\"")
     }
 
+    // One fixed signing key for every build, so new versions install over old ones.
+    if (elogKeystore.exists()) {
+        signingConfigs {
+            create("elog") {
+                storeFile = elogKeystore
+                storePassword = "elogkey123"
+                keyAlias = "elog"
+                keyPassword = "elogkey123"
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -38,8 +51,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Signed with the debug key so the APK installs directly on your phone.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (elogKeystore.exists()) {
+                signingConfigs.getByName("elog")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

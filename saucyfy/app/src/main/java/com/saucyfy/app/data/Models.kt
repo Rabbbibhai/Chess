@@ -18,12 +18,26 @@ fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.conten
 enum class MediaType(val key: String, val label: String) {
     MOVIE("movie", "Movie"),
     TV("tv", "Show"),
-    ANIME("anime", "Anime");
+    ANIME("anime", "Anime"),
+    MANGA("manga", "Manga"),
+    MUSIC("music", "Music");
 
     companion object {
         fun from(k: String?): MediaType = entries.firstOrNull { it.key == k } ?: MOVIE
     }
 }
+
+val MediaType.plural: String
+    get() = when (this) {
+        MediaType.MOVIE -> "Movies"
+        MediaType.TV -> "Shows"
+        MediaType.ANIME -> "Anime"
+        MediaType.MANGA -> "Manga"
+        MediaType.MUSIC -> "Music"
+    }
+
+/** Movies and songs are "one tap" items: no season / episode / chapter to keep track of. */
+val MediaType.isSingle: Boolean get() = this == MediaType.MOVIE || this == MediaType.MUSIC
 
 enum class Status(val key: String, val label: String) {
     WATCHING("watching", "Watching"),
@@ -36,10 +50,27 @@ enum class Status(val key: String, val label: String) {
     }
 }
 
-/** Real season / episode limits for a title, so the counters can't go past what exists. */
+/** Status wording that fits the kind of media (reading a manga, listening to a song...). */
+fun Status.labelFor(t: MediaType): String = when (t) {
+    MediaType.MANGA -> when (this) {
+        Status.WATCHING -> "Reading"
+        Status.WATCHED -> "Finished"
+        Status.PLANNED -> "To read"
+        Status.DROPPED -> "Dropped"
+    }
+    MediaType.MUSIC -> when (this) {
+        Status.WATCHING -> "Listening"
+        Status.WATCHED -> "Listened"
+        Status.PLANNED -> "To listen"
+        Status.DROPPED -> "Dropped"
+    }
+    else -> label
+}
+
+/** Real season / episode / chapter limits for a title, so the counters can't go past what exists. */
 data class Limits(
     val seasons: Map<Int, Int>? = null, // season number -> episode count (TV)
-    val totalEpisodes: Int? = null // anime
+    val totalEpisodes: Int? = null // anime episodes or manga chapters
 )
 
 /** A search / discover result from a public metadata API. */
@@ -79,8 +110,8 @@ data class LibraryItem(
     val overview: String? = null,
     val status: String = "plan_to_watch",
     val rating: Int? = null,
-    val season: Int? = null,
-    val episode: Int? = null,
+    val season: Int? = null, // TV: season, manga: volume
+    val episode: Int? = null, // TV / anime: episode, manga: chapter
     val notes: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null
 )
@@ -91,15 +122,16 @@ val LibraryItem.statusEnum: Status get() = Status.from(status)
 fun LibraryItem.toDetail() = Detail(type, externalId, title, year ?: "", posterUrl, overview ?: "", null, null)
 
 fun LibraryItem.progressLabel(): String? {
-    if (type == MediaType.MOVIE) return null
+    if (type.isSingle) return null
     val s = season
     val e = episode
     if (s == null && e == null) return null
     return buildString {
         if (type == MediaType.TV && s != null) append("S$s")
+        if (type == MediaType.MANGA && s != null) append("Vol $s")
         if (e != null) {
             if (isNotEmpty()) append(" · ")
-            append("E$e")
+            append(if (type == MediaType.MANGA) "Ch $e" else "E$e")
         }
     }
 }

@@ -34,7 +34,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.saucyfy.app.data.MediaType
 import com.saucyfy.app.data.Status
+import com.saucyfy.app.data.labelFor
 
 fun statusColor(s: Status): Color = when (s) {
     Status.WATCHING -> Brand.Sky
@@ -63,6 +65,23 @@ fun Poster(url: String?, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize()
             )
         }
+    }
+}
+
+/** Section heading: small accent bar + the theme's header color. */
+@Composable
+fun SectionHeader(text: String, modifier: Modifier = Modifier) {
+    val header = MaterialTheme.typography.headlineMedium.color
+    Row(modifier.padding(start = 20.dp, top = 14.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(text, style = MaterialTheme.typography.titleMedium, color = header, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -100,9 +119,9 @@ fun Pill(text: String, color: Color, modifier: Modifier = Modifier) {
     )
 }
 
-/** Movies only: one tap to put a movie on "To watch" or mark it "Finished". */
+/** Movies and songs: one tap to put it on "To watch / To listen" or mark it done. */
 @Composable
-fun MovieActions(current: Status?, onPick: (Status) -> Unit, modifier: Modifier = Modifier) {
+fun SingleActions(type: MediaType, current: Status?, onPick: (Status) -> Unit, modifier: Modifier = Modifier) {
     val pad = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(Status.PLANNED, Status.WATCHED).forEach { s ->
@@ -112,13 +131,13 @@ fun MovieActions(current: Status?, onPick: (Status) -> Unit, modifier: Modifier 
                     onClick = { onPick(s) },
                     contentPadding = pad,
                     modifier = Modifier.height(34.dp)
-                ) { Text("✓ " + s.label, style = MaterialTheme.typography.labelMedium) }
+                ) { Text("✓ " + s.labelFor(type), style = MaterialTheme.typography.labelMedium) }
             } else {
                 OutlinedButton(
                     onClick = { onPick(s) },
                     contentPadding = pad,
                     modifier = Modifier.height(34.dp)
-                ) { Text(s.label, style = MaterialTheme.typography.labelMedium) }
+                ) { Text(s.labelFor(type), style = MaterialTheme.typography.labelMedium) }
             }
         }
     }
