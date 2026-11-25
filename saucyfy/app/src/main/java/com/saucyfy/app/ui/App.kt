@@ -92,15 +92,8 @@ fun App(vm: AppViewModel) {
                 else -> MainScaffold(vm, ui)
             }
 
-            if (ui.adminOpen && ui.isAdmin) {
-                BackHandler { vm.closeAdmin() }
-                AdminScreen(
-                    onBack = { vm.closeAdmin() },
-                    onPublish = { n, notes, force -> vm.publishUpdate(n, notes, force) }
-                )
-            }
-
-            // Update splash (newer version exists) or one-time "What's new" after updating.
+            // Update splash (a newer build was pushed from the admin website)
+            // or the one-time "What's new" after updating.
             val prompt = ui.updatePrompt
             val news = ui.whatsNew
             if (prompt != null) {
@@ -260,7 +253,6 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                     },
                     onEditProfile = { n, u -> vm.editProfile(n, u) },
                     onTheme = { vm.setTheme(it) },
-                    onOpenAdmin = { vm.openAdmin() },
                     modifier = m
                 )
             }

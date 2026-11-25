@@ -6,19 +6,20 @@ Track movies, shows, anime, manga and music: save what you finished, rate it (1-
 
 - Kotlin + Jetpack Compose (Material 3), 7 themes, each with its own header color
 - Email + password login via Supabase Auth
-- Library in Supabase Postgres (row level security, per user): movies, shows, anime, **manga (volume / chapter)**, **music (tracks)**
+- Library in Supabase Postgres (row level security, per user): movies, shows, anime, manga (volume / chapter), music (tracks)
 - Friends, read-only friend libraries, chats with GIFs (history stored on the phones; the server mailbox only holds undelivered messages)
-- **In-app updates:** when a newer build is published, every phone shows an Update splash with the change list and a download + install button; after updating, a one-time "What's new" splash
-- **Admin panel** (Profile tab, admin accounts only): write the notes for the build you are running and publish them
+- **In-app updates:** when you push a build from the admin website, every phone on an older build shows an Update splash with the change list and a download + install button; after updating, a one-time "What's new" splash
 - Sources (no keys): Cinemeta/iTunes (movies), TVMaze (shows), Jikan/Kitsu (anime, manga), iTunes/Deezer (music), nekos.best (GIFs), Wikipedia (spelling help)
 
-## How releasing an update works
+## Releasing an update (admin website)
 
-1. Push your change. GitHub Actions builds and publishes the APK (`Elog.apk`) as a release.
-2. Install that build on your phone, open **Profile -> Admin panel**, type what changed (one line each), tap **Publish**.
-3. Everyone on an older build sees the Update splash next time they open Elog (or within ~30 minutes if it is open).
+The admin site lives in `admin-web/` (hosted on Vercel).
 
-The app downloads `https://github.com/Rabbbibhai/Chess/releases/latest/download/Elog.apk`, so the repo must stay public.
+1. Push your change. GitHub Actions builds and publishes `Elog.apk` as a release (`elog-build-N`).
+2. Open the admin website, sign in, find the build, press **Push to devices...**, edit the notes, confirm. Or don't - a build you don't push never reaches anyone.
+3. Phones on an older build see the Update splash when Elog opens (or within ~30 minutes if it is already open). **Withdraw** takes it back.
+
+The app downloads the APK link stored with the pushed build, so the repo must stay public.
 
 ## Signing key
 

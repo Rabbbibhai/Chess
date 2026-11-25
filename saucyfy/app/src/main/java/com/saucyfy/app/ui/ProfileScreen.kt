@@ -22,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,7 +60,6 @@ fun ProfileScreen(
     onPickAvatar: () -> Unit,
     onEditProfile: (name: String, username: String) -> Unit,
     onTheme: (String) -> Unit,
-    onOpenAdmin: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val session = ui.session
@@ -231,14 +229,6 @@ fun ProfileScreen(
                     }
                 }
             }
-        }
-
-        if (ui.isAdmin) {
-            Button(
-                onClick = onOpenAdmin,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(14.dp)
-            ) { Text("Admin panel - publish an update") }
         }
 
         OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) {

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths-ignore:
       - "saucyfy/**"
+      - "admin-web/**"
       - ".github/workflows/build-android.yml"
   workflow_dispatch:
 
