@@ -1,5 +1,7 @@
 package com.saucyfy.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,17 +11,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -32,10 +38,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,6 +59,8 @@ import com.saucyfy.app.data.Status
 import com.saucyfy.app.data.isSingle
 import com.saucyfy.app.data.labelFor
 import com.saucyfy.app.data.statusEnum
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -186,30 +200,28 @@ fun DetailSheet(
                     }
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
                         "Left off at",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                        if (type == MediaType.TV) {
-                            Stepper("Season", season.coerceAtMost(maxSeason), 1, maxSeason, knownSeason) {
-                                season = it
-                                episode = minOf(episode, epMax(it))
-                            }
+                    if (type == MediaType.TV) {
+                        Stepper("Season", season.coerceAtMost(maxSeason), 1, maxSeason, knownSeason) {
+                            season = it
+                            episode = minOf(episode, epMax(it))
                         }
-                        if (type == MediaType.MANGA) {
-                            Stepper("Volume", volume, 0, 300, false) { volume = it }
-                        }
-                        Stepper(
-                            if (type == MediaType.MANGA) "Chapter" else "Episode",
-                            episode.coerceAtMost(epMax(season)),
-                            0,
-                            epMax(season),
-                            knownEp
-                        ) { episode = it }
                     }
+                    if (type == MediaType.MANGA) {
+                        Stepper("Volume", volume, 0, 300, false) { volume = it }
+                    }
+                    Stepper(
+                        if (type == MediaType.MANGA) "Chapter" else "Episode",
+                        episode.coerceAtMost(epMax(season)),
+                        0,
+                        epMax(season),
+                        knownEp
+                    ) { episode = it }
                 }
             }
 
@@ -262,20 +274,79 @@ fun DetailSheet(
     }
 }
 
+/** A round button that steps once on tap and keeps stepping (faster and faster) while you hold it. */
+@Composable
+private fun RepeatButton(enabled: Boolean, onStep: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val step by rememberUpdatedState(onStep)
+    val bg = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(bg)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(onPress = {
+                    step()
+                    val job = scope.launch {
+                        delay(400)
+                        var gap = 140L
+                        while (true) {
+                            step()
+                            delay(gap)
+                            if (gap > 35) gap -= 10
+                        }
+                    }
+                    tryAwaitRelease()
+                    job.cancel()
+                })
+            },
+        contentAlignment = Alignment.Center
+    ) { content() }
+}
+
+/**
+ * Set a number fast: type it, tap + / - (hold to run), or jump with +5 / +10 / +50.
+ */
 @Composable
 private fun Stepper(label: String, value: Int, min: Int, max: Int, showMax: Boolean, onChange: (Int) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    val tint = MaterialTheme.colorScheme.onPrimaryContainer
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FilledTonalIconButton(onClick = { if (value > min) onChange(value - 1) }, enabled = value > min) {
-                Text("−", fontSize = 22.sp)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RepeatButton(enabled = value > min, onStep = { onChange((value - 1).coerceAtLeast(min)) }) {
+                Text("−", fontSize = 24.sp, color = tint)
             }
-            Text(
-                if (showMax) "$value / $max" else "$value",
-                style = MaterialTheme.typography.titleMedium
+            OutlinedTextField(
+                value = text,
+                onValueChange = { s ->
+                    val digits = s.filter { it.isDigit() }.take(5)
+                    text = digits
+                    digits.toIntOrNull()?.let { onChange(it.coerceIn(min, max)) }
+                },
+                singleLine = true,
+                textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, fontWeight = FontWeight.Bold),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.width(92.dp)
             )
-            FilledTonalIconButton(onClick = { if (value < max) onChange(value + 1) }, enabled = value < max) {
-                Icon(Icons.Filled.Add, "Increase")
+            RepeatButton(enabled = value < max, onStep = { onChange((value + 1).coerceAtMost(max)) }) {
+                Icon(Icons.Filled.Add, "Increase", tint = tint)
+            }
+            if (showMax) {
+                Text("/ $max", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (max >= 30) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(5, 10, 50).filter { it < max }.forEach { n ->
+                    AssistChip(
+                        onClick = { onChange((value + n).coerceAtMost(max)) },
+                        label = { Text("+$n") }
+                    )
+                }
             }
         }
     }

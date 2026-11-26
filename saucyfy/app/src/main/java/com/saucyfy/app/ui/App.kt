@@ -44,13 +44,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.saucyfy.app.AppViewModel
-import com.saucyfy.app.MusicViewModel
 import com.saucyfy.app.UiState
 import com.saucyfy.app.data.Detail
-import com.saucyfy.app.data.MediaType
-import com.saucyfy.app.data.Status
 import com.saucyfy.app.data.toDetail
 
 @Composable
@@ -132,11 +128,8 @@ fun App(vm: AppViewModel) {
 
 @Composable
 private fun MainScaffold(vm: AppViewModel, ui: UiState) {
-    val mvm: MusicViewModel = viewModel()
     var tab by rememberSaveable { mutableStateOf(0) }
-    var musicMode by rememberSaveable { mutableStateOf(false) }
     var detail by remember { mutableStateOf<Detail?>(null) }
-    val libraryTaps = remember { mutableListOf<Long>() }
     val totalUnread = ui.unread.values.sum()
     val chatOpen = tab == 3 && ui.chatWith != null
 
@@ -147,40 +140,9 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
     LaunchedEffect(tab) {
         if (tab == 2 || tab == 3) vm.loadFriends()
     }
-    // Back from the music section / a chat / a friend's list returns one step.
-    BackHandler(enabled = musicMode) { musicMode = false }
-    BackHandler(enabled = !musicMode && chatOpen) { vm.closeChat() }
-    BackHandler(enabled = !musicMode && tab == 2 && ui.viewingFriend != null) { vm.closeFriend() }
-
-    // Tapping the Library tab three times quickly opens the music-only section.
-    fun onLibraryTap() {
-        val now = System.currentTimeMillis()
-        libraryTaps.removeAll { now - it > 700 }
-        libraryTaps.add(now)
-        if (libraryTaps.size >= 3) {
-            libraryTaps.clear()
-            musicMode = true
-        } else {
-            tab = 0
-        }
-    }
-
-    if (musicMode) {
-        MusicSection(
-            mvm = mvm,
-            library = ui.library,
-            onSave = { t ->
-                vm.save(
-                    Detail(MediaType.MUSIC, "yt:" + t.videoId, t.title, "", t.thumb, t.artist, null),
-                    Status.PLANNED, null, null, null, null
-                ) { }
-            },
-            onUnsave = { item -> vm.remove(item) { } },
-            onExit = { musicMode = false },
-            modifier = Modifier.fillMaxSize()
-        )
-        return
-    }
+    // Back from a chat / a friend's list returns to the list.
+    BackHandler(enabled = chatOpen) { vm.closeChat() }
+    BackHandler(enabled = tab == 2 && ui.viewingFriend != null) { vm.closeFriend() }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -201,7 +163,7 @@ private fun MainScaffold(vm: AppViewModel, ui: UiState) {
                     tabs.forEachIndexed { i, (label, icon) ->
                         NavigationBarItem(
                             selected = tab == i,
-                            onClick = { if (i == 0) onLibraryTap() else tab = i },
+                            onClick = { tab = i },
                             icon = {
                                 if (i == 3 && totalUnread > 0) {
                                     BadgedBox(badge = { Badge { Text("$totalUnread") } }) { Icon(icon, label) }

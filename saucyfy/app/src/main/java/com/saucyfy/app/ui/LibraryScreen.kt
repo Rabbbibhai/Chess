@@ -1,5 +1,6 @@
 package com.saucyfy.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -8,7 +9,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -20,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
@@ -40,6 +44,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.saucyfy.app.UiState
@@ -55,6 +61,15 @@ import com.saucyfy.app.data.statusEnum
 import com.saucyfy.app.data.toDetail
 import com.saucyfy.app.data.type
 
+private fun typeColor(t: MediaType): Color = when (t) {
+    MediaType.MOVIE -> Brand.Amber
+    MediaType.TV -> Brand.Sky
+    MediaType.ANIME -> Color(0xFFF472B6)
+    MediaType.MANGA -> Brand.Grass
+    MediaType.MUSIC -> Color(0xFFB39DFF)
+}
+
+/** Library home = big tiles (Movies, Shows, Anime, Manga, Music). Tap one to open its own page. */
 @Composable
 fun LibraryScreen(
     ui: UiState,
@@ -65,17 +80,63 @@ fun LibraryScreen(
     onFind: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var section by rememberSaveable { mutableStateOf<String?>(null) }
     var filter by rememberSaveable { mutableStateOf<String?>(null) }
-    var typeFilter by rememberSaveable { mutableStateOf<String?>(null) }
-    val tObj: MediaType? = typeFilter?.let { MediaType.from(it) }
-    val base = ui.library.filter { typeFilter == null || it.mediaType == typeFilter }
-    val shown = base.filter { filter == null || it.status == filter }
-    val inProgress = base.filter { it.status == Status.WATCHING.key && !it.type.isSingle }
+    val type: MediaType? = section?.let { MediaType.from(it) }
+
+    BackHandler(enabled = type != null) {
+        section = null
+        filter = null
+    }
+
+    if (type == null) {
+        LibraryHome(
+            ui = ui,
+            onOpen = onOpen,
+            onBump = onBump,
+            onRefresh = onRefresh,
+            onFind = onFind,
+            onPick = {
+                section = it.key
+                filter = null
+            },
+            modifier = modifier
+        )
+    } else {
+        LibrarySection(
+            ui = ui,
+            type = type,
+            filter = filter,
+            onFilter = { filter = it },
+            onBack = {
+                section = null
+                filter = null
+            },
+            onOpen = onOpen,
+            onBump = onBump,
+            onSetStatus = onSetStatus,
+            onFind = onFind,
+            modifier = modifier
+        )
+    }
+}
+
+@Composable
+private fun LibraryHome(
+    ui: UiState,
+    onOpen: (Detail) -> Unit,
+    onBump: (LibraryItem) -> Unit,
+    onRefresh: () -> Unit,
+    onFind: () -> Unit,
+    onPick: (MediaType) -> Unit,
+    modifier: Modifier
+) {
+    val inProgress = ui.library.filter { it.status == Status.WATCHING.key && !it.type.isSingle }
 
     LazyColumn(
         modifier,
         contentPadding = PaddingValues(bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             Row(
@@ -95,41 +156,7 @@ fun LibraryScreen(
                 IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Refresh") }
             }
         }
-        // what kind of media
-        item {
-            Row(
-                Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(selected = typeFilter == null, onClick = { typeFilter = null }, label = { Text("Everything") })
-                MediaType.entries.forEach { t ->
-                    FilterChip(
-                        selected = typeFilter == t.key,
-                        onClick = { typeFilter = t.key },
-                        label = { Text(t.plural) }
-                    )
-                }
-            }
-        }
-        // which status
-        item {
-            Row(
-                Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("All ${base.size}") })
-                Status.entries.forEach { s ->
-                    val n = base.count { it.status == s.key }
-                    val name = if (tObj != null) s.labelFor(tObj) else s.label
-                    FilterChip(selected = filter == s.key, onClick = { filter = s.key }, label = { Text("$name $n") })
-                }
-            }
-        }
-        if (filter == null && inProgress.isNotEmpty()) {
+        if (inProgress.isNotEmpty()) {
             item {
                 Column {
                     SectionHeader("Continue")
@@ -144,17 +171,138 @@ fun LibraryScreen(
                 }
             }
         }
-        if (ui.libLoading && ui.library.isEmpty()) {
-            item {
-                Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            }
-        } else if (shown.isEmpty()) {
+        if (ui.library.isEmpty() && !ui.libLoading) {
             item {
                 EmptyState(
-                    title = if (ui.library.isEmpty()) "Your library is empty" else "Nothing here yet",
+                    title = "Your library is empty",
                     body = "Search for a movie, show, anime, manga or song and save it with a rating or where you left off.",
+                    action = { Button(onClick = onFind) { Text("Find something") } }
+                )
+            }
+        }
+        item { SectionHeader("Collections") }
+        MediaType.entries.chunked(2).forEach { pair ->
+            item {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    pair.forEach { t ->
+                        SectionTile(
+                            type = t,
+                            items = ui.library.filter { it.type == t },
+                            modifier = Modifier.weight(1f),
+                            onClick = { onPick(t) }
+                        )
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+/** A big tappable tile for one kind of media, with a little stack of your newest posters. */
+@Composable
+private fun SectionTile(type: MediaType, items: List<LibraryItem>, modifier: Modifier, onClick: () -> Unit) {
+    val accent = typeColor(type)
+    val done = items.count { it.status == Status.WATCHED.key }
+    val square = type == MediaType.MUSIC
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(26.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = modifier.height(160.dp)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.42f), Color.Transparent)))
+        ) {
+            Column(Modifier.align(Alignment.TopStart).padding(16.dp)) {
+                Text(type.plural, style = MaterialTheme.typography.titleLarge)
+                Text(
+                    if (items.isEmpty()) "Nothing yet" else "${items.size} · $done finished",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy((-20).dp)
+            ) {
+                items.take(3).reversed().forEach {
+                    Poster(it.posterUrl, Modifier.width(if (square) 56.dp else 52.dp).height(if (square) 56.dp else 78.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibrarySection(
+    ui: UiState,
+    type: MediaType,
+    filter: String?,
+    onFilter: (String?) -> Unit,
+    onBack: () -> Unit,
+    onOpen: (Detail) -> Unit,
+    onBump: (LibraryItem) -> Unit,
+    onSetStatus: (LibraryItem, Status) -> Unit,
+    onFind: () -> Unit,
+    modifier: Modifier
+) {
+    val base = ui.library.filter { it.type == type }
+    val shown = base.filter { filter == null || it.status == filter }
+
+    LazyColumn(
+        modifier,
+        contentPadding = PaddingValues(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, end = 8.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to library") }
+                Column(Modifier.weight(1f)) {
+                    Text(type.plural, style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        "${base.size} titles · ${base.count { it.status == Status.WATCHED.key }} finished",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item {
+            Row(
+                Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(selected = filter == null, onClick = { onFilter(null) }, label = { Text("All ${base.size}") })
+                Status.entries.forEach { s ->
+                    val n = base.count { it.status == s.key }
+                    FilterChip(
+                        selected = filter == s.key,
+                        onClick = { onFilter(s.key) },
+                        label = { Text("${s.labelFor(type)} $n") }
+                    )
+                }
+            }
+        }
+        if (shown.isEmpty()) {
+            item {
+                EmptyState(
+                    title = "Nothing here yet",
+                    body = "Find something in Discover and it shows up here.",
                     action = { Button(onClick = onFind) { Text("Find something") } }
                 )
             }
